@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simplemarl"
+version = "0.1.0"
+description = "A simple multi-agent reinforcement learning library for customization and rapid train/deployment"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "John Kliem", email = "john.kliem3.civ@us.navy.mil" }
+]
+requires-python = ">=3.9"
+
+keywords = [
+    "reinforcement-learing",
+    "multi-agent",
+    "marl",
+    "ppo",
+    "pettingzoo",
+    "drl"
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: MIT License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+dependencies = [
+    "numpy",
+    "torch",
+    "gymnasium",
+    "pettingzoo",
+]

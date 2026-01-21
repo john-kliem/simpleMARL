@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: simplemarl
+Version: 0.1.0
+Summary: A simple multi-agent reinforcement learning library for customization and rapid train/deployment
+Author-email: John Kliem <john.kliem3.civ@us.navy.mil>
+License: MIT
+Keywords: reinforcement-learing,multi-agent,marl,ppo,pettingzoo,drl
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: MIT License
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: torch
+Requires-Dist: gymnasium
+Requires-Dist: pettingzoo
