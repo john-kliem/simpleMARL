@@ -76,9 +76,10 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class PPO(nn.Module):
-    def __init__(self, obs_space, act_space, config=PPO_Config()):
+    def __init__(self, obs_space, act_space, config=PPOConfig()):
         super().__init__()
         self.config = config
+        self.optimizer = None
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(obs_space.shape).prod(), 64)),
             nn.Tanh(),
@@ -93,8 +94,15 @@ class PPO(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, act_space.n), std=0.01),
         )
+        self.init_optimizer()
     def init_optimizer(self):
         self.optimizer = optim.Adam(self.parameters(), lr=self.config.learning_rate, eps=1e-5)
+
+    def anneal_lr(self, iteration):
+        if self.config.anneal_lr:
+            frac = 1.0 - (iteration - 1.0) / self.config.num_iterations
+            lrnow = frac * self.config.learning_rate 
+            self.optimizer.param_groups[0]["lr"] = lrnow 
 
     def get_value(self, x):
         return self.critic(x)
