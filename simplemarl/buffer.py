@@ -40,11 +40,11 @@ class Buffer:
         #Start overwriting the old values
         self.cur_step = 0
     def get_values(self):
-        return self.values[:self.step].reshape(-1)
+        return self.values[:self.values.shape[0]].reshape(-1)
     def get_returns(self):
-        return self.returns[:self.step].reshape(-1)
+        return self.returns[:self.returns.shape[0]].reshape(-1)
     def get_rewards(self):
-        return self.rewards[:self.step]
+        return self.rewards[:self.rewards.shape[0]]
     def get_flat_batch(self,):
         flat_obs = self.observations.reshape((-1,) + self.obs_space.shape)
         flat_logprobs = self.logprobs.reshape(-1)
@@ -54,8 +54,14 @@ class Buffer:
         flat_values = self.values.reshape(-1)
         
         return {'obs':flat_obs, 'actions':flat_actions,'logprobs':flat_logprobs,'advantages':flat_advantages,'returns':flat_returns, 'values':flat_values}
-    def get_average_return(self):
-        return self.rewards.reshape(-1).sum() / (self.dones.reshape(-1).sum()+1)
+
+    def get_average_return(self,):
+        rew = 0.0
+        for i in range(self.dones.shape[0]):
+            rew += self.rewards[i][0]
+            if self.dones[i][0]:
+                return rew
+        return rew
     def calculate_returns_and_advantages(self, gamma, gae_lambda):
         with torch.no_grad():
             lastgaelam = 0
@@ -70,5 +76,6 @@ class Buffer:
                 self.advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam 
             self.returns = self.advantages + self.values
     
+
 
 

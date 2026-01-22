@@ -1,7 +1,128 @@
 import multiprocessing as mp
 import numpy as np
+from multiprocessing import shared_memory
+from gymnasium.spaces import Discrete, Box
 
 
+import multiprocessing as mp
+import numpy as np
+from multiprocessing import shared_memory
+
+def worker_pettingzoo_zerocopy(conn, env_fn, num_envs, start_idx, shm_config):
+    # Create the local sub-environments for this worker
+    envs = [env_fn()() for _ in range(num_envs)]
+    agents = envs[0].agents
+    
+    # Map to shared memory
+    shm_objs = []
+    shms = {aid: {} for aid in agents}
+    for aid in agents:
+        for key, conf in shm_config[aid].items():
+            # Attach to the FULL block
+           
+            shm = shared_memory.SharedMemory(name=conf['name'])
+            shm_objs.append(shm)
+            full_block = np.ndarray(conf['shape'], dtype=conf['dtype'], buffer=shm.buf)
+            # Create a VIEW of just this worker's assigned rows
+            shms[aid][key] = full_block[start_idx : start_idx + num_envs]
+    while True:
+        cmd, _ = conn.recv()
+        if cmd == "step":
+            for i, env in enumerate(envs):
+                # The worker reads actions directly from its shared view
+                # Actions were placed there by the main process
+                actions = {aid: int(shms[aid]['actions'][i]) if isinstance(env.action_spaces[aid], Discrete) else shms[aid]['actions'][i] for aid in agents}
+                #Check state for terms
+                obs, rews, terms, truncs, _ = env.step(actions)
+                
+                if any(terms.values()) or any(truncs.values()):
+                    obs, _ = env.reset()
+                for aid in agents:
+                    shms[aid]['obs'][i] = obs[aid]
+                    shms[aid]['rews'][i] = rews[aid] 
+                    shms[aid]['terms'][i] = terms[aid]
+                    shms[aid]['truncs'][i] = truncs[aid]
+            
+            conn.send("Done")
+        elif cmd == "reset":
+            for i,env in enumerate(envs):
+                obs,_ = env.reset()
+                for aid in obs:
+                    shms[aid]['obs'][i] = obs[aid]
+                    shms[aid]['terms'][i] = 0.0
+                    shms[aid]['terms'][i] = 0.0 
+                    shms[aid]['rews'][i] = 0.0
+            conn.send("Done")
+        elif cmd == "close":
+            break
+
+class SubProcVecEnv:
+    def __init__(self, env_fn, num_workers, num_envs_per_worker):
+        temp_env = env_fn()()
+        self.agents = temp_env.agents
+        self.num_workers = num_workers
+        self.num_envs_per_worker = num_envs_per_worker
+        total_envs = num_workers * num_envs_per_worker
+        
+        self.shm_blocks = []
+        self.state_views = {aid: {} for aid in self.agents}
+        shm_configs = {aid: {} for aid in self.agents}
+
+        for aid in self.agents:
+            specs = {
+                'obs': (total_envs, *temp_env.observation_spaces[aid].shape),
+                'rews': (total_envs,),
+                'terms': (total_envs,),
+                'truncs': (total_envs,),
+                'actions': (total_envs, *temp_env.action_spaces[aid].shape)
+            }
+
+            for key, shape in specs.items():
+                # Corrected type check
+                dtype = np.float32 if key in ['obs', 'rews', 'actions'] else np.bool_
+                nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
+                
+                shm = shared_memory.SharedMemory(create=True, size=nbytes)
+                self.shm_blocks.append(shm)
+                
+                self.state_views[aid][key] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+                shm_configs[aid][key] = {'name': shm.name, 'shape': shape, 'dtype': dtype}
+
+        self.conns = []
+        for i in range(num_workers):
+            parent_conn, child_conn = mp.Pipe()
+            start_idx = i * num_envs_per_worker
+            p = mp.Process(target=worker_pettingzoo_zerocopy, 
+                           args=(child_conn, env_fn, num_envs_per_worker, start_idx, shm_configs))
+            p.daemon = True
+            p.start()
+            self.conns.append(parent_conn)
+
+    def step_async(self, actions_dict):
+        for aid in self.agents:
+            # Direct copy of all actions into the shared memory view
+            np.copyto(self.state_views[aid]['actions'], actions_dict[aid])
+        
+        for conn in self.conns:
+            conn.send(("step", None))
+        
+    def step_wait(self):
+        for conn in self.conns:
+            conn.recv()
+        return self.state_views
+    def reset(self):
+        for conn in self.conns:
+            conn.send(("reset", None))
+        for conn in self.conns:
+            conn.recv()
+        return self.state_views
+    def close(self):
+        for conn in self.conns:
+            conn.send(("close", None))
+        for shm in self.shm_blocks:
+            shm.close()
+            shm.unlink()
+    
 
 #TODO Pass in memory space and directly assign values to shared space
 def worker_pettingzoo(conn, env):
@@ -151,40 +272,56 @@ class SerialVecEnv():
 def make_env_train():
     def thunk():
         env = MaritimeRaceEnv()
+        return env
+    return thunk
 if __name__ == "__main__":    
     from maritime_env import MaritimeRaceEnv
     import time
-    num_envs = 5
+    num_envs = 100
+    num_workers = 1
     num_steps = 6000
-    sve = SerialVecEnv(make_env_train, num_envs)
-    rets = sve.reset()
+    tenv = make_env_train()()
+    zve = SubProcVecEnv(make_env_train, num_workers, num_envs)
+    rets = zve.reset()
+    # print("Rets: ", rets)
+    s = time.time()
+    for i in range(num_steps):
+        action = {"agent_0":[tenv.action_spaces['agent_0'].sample() for i in range(num_workers*num_envs)]}
+      
+        zve.step_async(action)
+        rets = zve.step_wait()
+    print("Rets Step: ", rets['agent_0']['terms'])
+    zve.close()
+    print("Elapsed Time 1200 steps ", time.time()-s)
+    # sve = SerialVecEnv(make_env_train, num_envs)
+    # rets = sve.reset()
     
-    action = {"agent_0":[0 for i in range(num_envs)]}
-    s = time.perf_counter()
-    for i in range(1200):
-        sve.step_async(action)
-        rets = sve.step_wait()
-        # for aid in rets:
-        #     print("Agent: ", aid)
-        #     for k in rets[aid]:
-        #         print("K: ",k," Value: ", rets[aid][k])
-    sve.close()
-    print("100 Envs Serial: ", time.perf_counter() - s)
-    #Check Parallel Environment
-    pve = ParallelVecEnv(make_env_train, num_envs)
-    rets = pve.reset()
+    # action = {"agent_0":[0 for i in range(num_envs)]}
+    # s = time.perf_counter()
+    # for i in range(1200):
+    #     sve.step_async(action)
+    #     rets = sve.step_wait()
+    #     # for aid in rets:
+    #     #     print("Agent: ", aid)
+    #     #     for k in rets[aid]:
+    #     #         print("K: ",k," Value: ", rets[aid][k])
+    # sve.close()
+    # print("100 Envs Serial: ", time.perf_counter() - s)
+    # #Check Parallel Environment
+    # pve = ParallelVecEnv(make_env_train, num_envs)
+    # rets = pve.reset()
    
-    action = {"agent_0":[0 for i in range(num_envs)]}
-    s = time.perf_counter()
-    for i in range(1200):
-        # print("Step: ",i)
-        pve.step_async(action)
-        rets = pve.step_wait()
-        # print("Final Rets: ", rets)
-        # for aid in rets:
-            # print("Agent: ", aid)
-            # for k in rets[aid]:
-                # print("K: ",k," Value: ", rets[aid][k])
-    print("100 envs Parallel: ", time.perf_counter()-s)
-    pve.close()
+    # action = {"agent_0":[0 for i in range(num_envs)]}
+    # s = time.perf_counter()
+    # for i in range(1200):
+    #     # print("Step: ",i)
+    #     pve.step_async(action)
+    #     rets = pve.step_wait()
+    #     # print("Final Rets: ", rets)
+    #     # for aid in rets:
+    #         # print("Agent: ", aid)
+    #         # for k in rets[aid]:
+    #             # print("K: ",k," Value: ", rets[aid][k])
+    # print("100 envs Parallel: ", time.perf_counter()-s)
+    # pve.close()
 
