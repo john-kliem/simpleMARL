@@ -195,7 +195,7 @@ if __name__ == "__main__":
             buffers[aid].reset()
         # avg = run_game(make_env, policies, 2)
         policy_update_elapsed = time.time() - policy_update_start
-        
+        global_step += args.num_envs * args.num_workers * args.num_steps
         print(f"Iteration {iteration}/{args.num_iterations} | Iteration Elapsed {(time.time()-start_time)} | Average: {avg} | SPS {((args.num_envs*args.num_workers*args.num_steps)/(time.time()-start_time))} | Policy Update {policy_update_elapsed}")
         for a in args.to_train:
             if iteration % 10 == 0:
@@ -205,7 +205,7 @@ if __name__ == "__main__":
             y_pred, y_true = buffers[a].get_values().detach().cpu().numpy(), buffers[a].get_returns().detach().cpu().numpy()
             var_y = np.var(y_true)
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-            global_step += args.num_envs * args.num_workers * args.num_steps
+            
 
             sw[a].add_scalar("charts/learning_rate", policies[a].optimizer.param_groups[0]["lr"], global_step)
             sw[a].add_scalar("losses/value_loss", logs[a]["v_loss"], global_step)
