@@ -1,6 +1,7 @@
 pyproject.toml
 simplemarl/__init__.py
 simplemarl/buffer.py
+simplemarl/parallel_pet_wrapper.py
 simplemarl/vecenv.py
 simplemarl.egg-info/PKG-INFO
 simplemarl.egg-info/SOURCES.txt

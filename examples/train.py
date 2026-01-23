@@ -14,8 +14,11 @@ from simplemarl.algorithms import ppo
 from simplemarl.buffer import Buffer
 from simplemarl.parallel_pet_wrapper import GymnasiumToPettingZooParallel
 #Environment Imports
-from maritime_env import MaritimeRaceEnv
+# from maritime_env import MaritimeRaceEnv
+from pyquaticus import pyquaticus_v0
+from pyquaticus.mctf26_config import config_dict_std as mctf_config
 
+from pyquaticus.envs.competition_pyquaticus import CompPyquaticusEnv
 
 
 def run_game(env_fn, policies, num_games):
@@ -55,17 +58,17 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""    
     env_id: str = "CPPyquaticus"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    num_workers: int = 4
+    num_workers: int = 40
     """Number of workers running num_envs environments"""
-    num_steps: int = 128
+    num_steps: int = 600
     """the number of steps to run in each environment per policy rollout"""
-    minibatch_size: int = 128
+    minibatch_size: int = 120
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 10
     """the K epochs to update the policy"""
     # to be filled in runtime
     batch_size: int = 0
@@ -74,15 +77,23 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-    to_train: list = field(default_factory=lambda: ['agent_0'])
+    to_train: list = field(default_factory=lambda: ['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5'])
     """the ID's of agents to which will be trained"""
-    policies:dict = field(default_factory=lambda:{'agent_0':"init_ppo"}) #Must contain policy for every agent in pettingzooenv
+    policies:dict = field(default_factory=lambda:{'agent_0':"init_ppo", 'agent_1':"init_ppo", 'agent_2':"init_ppo",'agent_3':"agent_0", 'agent_4':'agent_1', 'agent_5':'agent_2'}) #Must contain policy for every agent in pettingzooenv
     device="cpu"#torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 def make_env():
     def thunk():
         # env =  MaritimeRaceEnv()
-        env = gym.make("CartPole-v1")
-        env = GymnasiumToPettingZooParallel(env)
+        # env = gym.make("CartPole-v1")
+        # env = GymnasiumToPettingZooParallel(env)
+        import pyquaticus.utils.rewards as rew
+        rews = {'agent_0':rew.caps_and_grabs,
+                'agent_1':rew.caps_and_grabs,
+                'agent_2':rew.caps_and_grabs,
+                'agent_3':rew.caps_and_grabs,
+                'agent_4':rew.caps_and_grabs,
+                'agent_5':rew.caps_and_grabs}
+        env = CompPyquaticusEnv(render_mode=None, config_dict=mctf_config, reward_config=rews)
         return env
     return thunk
 if __name__ == "__main__":
@@ -107,11 +118,13 @@ if __name__ == "__main__":
     for aid in args.policies:
         if args.policies[aid] == "init_ppo":
             config = ppo.PPOConfig()
-            config.ent_coef = 0.01
+            config.ent_coef = 0.1
             config.learning_rate = 2.5e-4
             config.num_iterations = args.num_iterations 
             config.device = args.device
             policies[aid] = ppo.PPO(obs_spaces[aid], act_spaces[aid], config)
+        else:
+            policies[aid] = policies[args.policies[aid]] # Use agents 3-5
         if aid in args.to_train:
             buffers[aid] = Buffer(obs_spaces[aid], act_spaces[aid], args.num_envs*args.num_workers, args.num_steps)
             sw[aid] = SummaryWriter(f"runs/{aid}")
@@ -178,9 +191,9 @@ if __name__ == "__main__":
                     logs[aid] = policies[aid].update(minibatch)
         for aid in buffers:
             # avg[aid] = avg[aid] / (avg['dones'] if avg['dones'] <= 0 else 1)
-            # avg[aid] = buffers[aid].get_average_return()
+            avg[aid] = buffers[aid].get_average_return()
             buffers[aid].reset()
-        avg = run_game(make_env, policies, 2)
+        # avg = run_game(make_env, policies, 2)
         policy_update_elapsed = time.time() - policy_update_start
         
         print(f"Iteration {iteration}/{args.num_iterations} | Iteration Elapsed {(time.time()-start_time)} | Average: {avg} | SPS {((args.num_envs*args.num_workers*args.num_steps)/(time.time()-start_time))} | Policy Update {policy_update_elapsed}")

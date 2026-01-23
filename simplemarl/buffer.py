@@ -56,12 +56,13 @@ class Buffer:
         return {'obs':flat_obs, 'actions':flat_actions,'logprobs':flat_logprobs,'advantages':flat_advantages,'returns':flat_returns, 'values':flat_values}
 
     def get_average_return(self,):
-        rew = 0.0
-        for i in range(self.dones.shape[0]):
-            rew += self.rewards[i][0]
-            if self.dones[i][0]:
-                return rew
-        return rew
+        # rew = 0.0
+        # for i in range(self.dones.shape[0]):
+        #     rew += self.rewards[i][0]
+        #     if self.dones[i][0]:
+        #         return rew
+        # return rew
+        return self.rewards.squeeze(-1).sum() / 40
     def calculate_returns_and_advantages(self, gamma, gae_lambda):
         with torch.no_grad():
             lastgaelam = 0
