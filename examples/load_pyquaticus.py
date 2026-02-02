@@ -19,7 +19,7 @@ from pyquaticus.mctf26_config import config_dict_std as mctf_config
 
 from pyquaticus.envs.competition_pyquaticus import CompPyquaticusEnv
 
-
+import sys
 import gymnasium as gym
 import numpy as np
 import torch
@@ -38,6 +38,8 @@ def make_env():
             'agent_3':rew.caps_and_grabs,
             'agent_4':rew.caps_and_grabs,
             'agent_5':rew.caps_and_grabs}
+    mc_config = mctf_config
+    mc_config['render_saving'] = True
     env = CompPyquaticusEnv(render_mode='human', config_dict=mctf_config, reward_config=rews)
     return env
 
@@ -75,7 +77,7 @@ class PPO(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Deploy a trained policy in a 2v2 PyQuaticus environment')
+    parser = argparse.ArgumentParser(description='Deploy a trained policy in a 3v3 PyQuaticus environment')
     parser.add_argument('agent_0', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-0-policy')
     parser.add_argument('agent_1', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-1-policy') 
     parser.add_argument('agent_2', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-1-policy') 
@@ -91,6 +93,12 @@ if __name__ == "__main__":
     obs,_ = env.reset()
     terms = {'agent_0':False}
     rsum = {'agent_0':0.0, 'agent_1':0.0, 'agent_2':0.0, 'agent_3':0.0, 'agent_4':0.0, 'agent_5':0.0}
+    steps = 0
+    # print("Agent_0 Obs: ", obs['agent_0'] == obs['agent_5'])
+    # print("Agent_1 Obs: ", obs['agent_1'] == obs['agent_4'])
+    # print("Agent_2 Obs: ", obs['agent_2'] == obs['agent_3'])
+    # time.sleep(5)
+    # sys.exit()
     while not any(terms.values()):
         actions = {}
         for aid in obs:
@@ -105,4 +113,7 @@ if __name__ == "__main__":
         print(f"Rewards: {rews}")
         for aid in rsum:
             rsum[aid] += rews[aid]
-    print(f"Finale sum: {rsum}")
+        steps += 1
+    print(f"Finale sum: {rsum} Steps: {steps}")
+    #Save Video
+    env.buffer_to_video(recording_compression=True)

@@ -2,15 +2,13 @@ import multiprocessing as mp
 import numpy as np
 from multiprocessing import shared_memory
 from gymnasium.spaces import Discrete, Box
-
-
 import multiprocessing as mp
 import numpy as np
 from multiprocessing import shared_memory
 
 def worker_pettingzoo_zerocopy(conn, env_fn, num_envs, start_idx, shm_config):
     # Create the local sub-environments for this worker
-    envs = [env_fn()() for _ in range(num_envs)]
+    envs = [env_fn() for _ in range(num_envs)]
     agents = envs[0].agents
     
     # Map to shared memory
@@ -58,7 +56,7 @@ def worker_pettingzoo_zerocopy(conn, env_fn, num_envs, start_idx, shm_config):
 
 class SubProcVecEnv:
     def __init__(self, env_fn, num_workers, num_envs_per_worker):
-        temp_env = env_fn()()
+        temp_env = env_fn()
         self.agents = temp_env.agents
         self.num_workers = num_workers
         self.num_envs_per_worker = num_envs_per_worker
@@ -268,60 +266,3 @@ class SerialVecEnv():
             self.envs[i].close()
         self.envs = []
         self.state = None 
-        
-def make_env_train():
-    def thunk():
-        env = MaritimeRaceEnv()
-        return env
-    return thunk
-if __name__ == "__main__":    
-    from maritime_env import MaritimeRaceEnv
-    import time
-    num_envs = 100
-    num_workers = 1
-    num_steps = 6000
-    tenv = make_env_train()()
-    zve = SubProcVecEnv(make_env_train, num_workers, num_envs)
-    rets = zve.reset()
-    # print("Rets: ", rets)
-    s = time.time()
-    for i in range(num_steps):
-        action = {"agent_0":[tenv.action_spaces['agent_0'].sample() for i in range(num_workers*num_envs)]}
-      
-        zve.step_async(action)
-        rets = zve.step_wait()
-    print("Rets Step: ", rets['agent_0']['terms'])
-    zve.close()
-    print("Elapsed Time 1200 steps ", time.time()-s)
-    # sve = SerialVecEnv(make_env_train, num_envs)
-    # rets = sve.reset()
-    
-    # action = {"agent_0":[0 for i in range(num_envs)]}
-    # s = time.perf_counter()
-    # for i in range(1200):
-    #     sve.step_async(action)
-    #     rets = sve.step_wait()
-    #     # for aid in rets:
-    #     #     print("Agent: ", aid)
-    #     #     for k in rets[aid]:
-    #     #         print("K: ",k," Value: ", rets[aid][k])
-    # sve.close()
-    # print("100 Envs Serial: ", time.perf_counter() - s)
-    # #Check Parallel Environment
-    # pve = ParallelVecEnv(make_env_train, num_envs)
-    # rets = pve.reset()
-   
-    # action = {"agent_0":[0 for i in range(num_envs)]}
-    # s = time.perf_counter()
-    # for i in range(1200):
-    #     # print("Step: ",i)
-    #     pve.step_async(action)
-    #     rets = pve.step_wait()
-    #     # print("Final Rets: ", rets)
-    #     # for aid in rets:
-    #         # print("Agent: ", aid)
-    #         # for k in rets[aid]:
-    #             # print("K: ",k," Value: ", rets[aid][k])
-    # print("100 envs Parallel: ", time.perf_counter()-s)
-    # pve.close()
-
