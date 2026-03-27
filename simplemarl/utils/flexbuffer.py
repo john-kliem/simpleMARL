@@ -70,13 +70,13 @@ class FlexBuffer:
         This method populates the buffers specified by `return_attr` and `advantage_attr`.
 
         Args:
+            next_value (torch.Tensor): The value of the state after the last step in the buffer.
+            next_done (torch.Tensor): The done flag for the state after the last step.
             return_attr (str): Name of the buffer to store returns.
             value_attr (str): Name of the buffer containing value predictions for each step.
             advantage_attr (str): Name of the buffer to store advantages.
             rewards_attr (str): Name of the buffer containing rewards for each step.
             dones_attr (str): Name of the buffer containing done flags for each step.
-            next_value (torch.Tensor): The value of the state after the last step in the buffer.
-            next_done (torch.Tensor): The done flag for the state after the last step.
             gamma (float): The discount factor.
             gae_lambda (float): The lambda parameter for GAE.
         """
@@ -145,9 +145,29 @@ def build_ippo(env_fn, agent, timesteps, num_envs, device):
     return buffer.build(device)
 
 def build_mappo(env_fn, agents, timesteps, num_envs, device):
-    env = env_fn()()
+    env = env_fn()
     buffer = FlexBuilder() 
+    state = 0
+    for aid in agents:
+        #Agent Specific Buffers
+        buffer.add(f"a{aid}_observations", shape=(timesteps,num_envs,*env.observation_space(aid)), dtype=torch.float32)
+        buffer.add(f"a{aid}_actions", shape=(timesteps,num_envs,*env.action_space(aid)), dtype=torch.float32)
+        buffer.add(f"a{aid}_logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
+        buffer.add(f"a{aid}_rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+        state += env.get_obserservation_spaces(aid)[0]
+    #Info For Critic
+    #TODO Add Join STate
+    buffer.add("state", shape=(timesteps,num_envs, state), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("values", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
+    return buffer.build(device)
 
+
+def build_mat(env_fn, agents, timesteps, num_envs, device):
+    env = env_fn()
+    buffer = FlexBuilder() 
     state = 0
     for aid in agents:
         #Agent Specific Buffers
