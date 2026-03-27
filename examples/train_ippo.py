@@ -13,7 +13,8 @@ import random
 #Buffer/ML algorithms
 from simplemarl.vecenv import SerialVecEnv, ParallelVecEnv, SubProcVecEnv
 from simplemarl.algorithms import ppo
-from simplemarl.buffer import Buffer
+from simplemarl.utils.flexbuffer import FlexBuffer, FlexBuilder, build_ippo
+# from simplemarl.buffer import Buffer
 from simplemarl.parallel_pet_wrapper import GymnasiumToPettingZooParallel
 
 #Pyquaticus Environment Imports
@@ -87,10 +88,10 @@ class Args:
     policies:dict = field(default_factory=lambda:{'agent_0':"init_ppo", 
                                                   'agent_1':"init_ppo", 
                                                   'agent_2':"init_ppo",
-                                                  'agent_3':"agent_2", 
-                                                  'agent_4':'agent_1', 
-                                                  'agent_5':'agent_0'}) #Must contain policy for every agent in pettingzooenv
-    device:str=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                                                  'agent_3':"init_ppo", 
+                                                  'agent_4':'init_ppo', 
+                                                  'agent_5':'init_ppo'}) #Must contain policy for every agent in pettingzooenv
+    device:str="cpu"
 def make_env():
     def thunk():
         import pyquaticus.utils.rewards as rew
@@ -142,7 +143,11 @@ if __name__ == "__main__":
         else:
             policies[aid] = policies[args.policies[aid]] # Use agents 3-5
         if aid in args.to_train:
-            buffers[aid] = Buffer(obs_spaces[aid], act_spaces[aid], args.num_envs*args.num_workers, args.num_steps, args.device)
+            buffers[aid] = build_ippo(env_fn=make_env(), 
+                                      agent=aid, 
+                                      timesteps=args.num_steps,
+                                      num_envs=(args.num_envs * args.num_workers),
+                                      device=args.device)
             sw[aid] = SummaryWriter(f"runs/{aid}")
             sw[aid].add_text(
                 "hyperparameters",
@@ -150,9 +155,7 @@ if __name__ == "__main__":
             global_step=0, 
             )
         avg[aid] = 0.0
-        #TODO add loading PPO and DQN algorithms
     envs = SubProcVecEnv(make_env(), args.num_workers, args.num_envs)
-
     for iteration in range(1, args.num_iterations+1):
         start_time = time.time()
         for aid in args.to_train:
@@ -163,36 +166,47 @@ if __name__ == "__main__":
         for i in range(args.num_steps):
             #Add Observation
             for aid in args.to_train:
-                buffers[aid].observations[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]["obs"]))
-                buffers[aid].dones[buffers[aid].get_step()].copy_(torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32)))
+                buffers[aid].add("observations", rets[aid]["obs"])
+                buffers[aid].add("dones", torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32)))
+                #buffers[aid].observations[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]["obs"]))
+                #buffers[aid].dones[buffers[aid].get_step()].copy_(torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32)))
                 
             #Compute actions
             actions = {}
             for aid in policies:
                 with torch.no_grad():
-                    act, logprob, _, value = policies[aid].get_action_and_value(buffers[aid].observations[buffers[aid].get_step()])
+                    act, logprob, _, value = policies[aid].get_action_and_value(buffers[aid].get("observations"))
                     if aid in buffers:
-                        buffers[aid].actions[buffers[aid].get_step()].copy_(act.squeeze(-1)) #{'actions':act.squeeze(-1), 'logprobs':logprob.squeeze(-1), 'values':value.squeeze(-1)})
-                        buffers[aid].logprobs[buffers[aid].get_step()].copy_(logprob.squeeze(-1))
-                        buffers[aid].values[buffers[aid].get_step()].copy_(value.squeeze(-1))
+                        buffers[aid].add("actions", act.squeeze(-1))
+                        buffers[aid].add("logprobs", logprob.squeeze(-1))
+                        buffers[aid].add("values", value.squeeze(-1))
+                        # buffers[aid].actions[buffers[aid].get_step()].copy_(act.squeeze(-1)) #{'actions':act.squeeze(-1), 'logprobs':logprob.squeeze(-1), 'values':value.squeeze(-1)})
+                        # buffers[aid].logprobs[buffers[aid].get_step()].copy_(logprob.squeeze(-1))
+                        # buffers[aid].values[buffers[aid].get_step()].copy_(value.squeeze(-1))
                 actions[aid] = act.detach().cpu().numpy()
             envs.step_async(actions)
             rets = envs.step_wait() #obs, rew, term, trunc, info
             
             for aid in buffers:
-                buffers[aid].rewards[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]['rews']))
+                buffers[aid].add("rewards", rets[aid]['rews'])#rewards[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]['rews']))
                 buffers[aid].step()
         #Bootstrap values in all buffers GAE
         for aid in buffers:
-            buffers[aid].next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
-            buffers[aid].next_done = torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32))
-            buffers[aid].calculate_returns_and_advantages(policies[aid].config.gamma, policies[aid].config.gae_lambda)
+            next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
+            next_done = torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32))
+            buffers[aid].returns_and_advantages(next_value, next_done)#calculate_returns_and_advantages(policies[aid].config.gamma, policies[aid].config.gae_lambda)
 
         #Update policy
         policy_update_start = time.time()
         flat_batches = {}
         for aid in buffers:
-            flat_batches[aid] = buffers[aid].get_flat_batch()
+            flat_batches[aid] = {'obs':buffers[aid].flatten('observations'),
+                                 'actions':buffers[aid].flatten('actions'),
+                                 'logprobs':buffers[aid].flatten('logprobs'),
+                                 'values':buffers[aid].flatten('values'),
+                                 'returns':buffers[aid].flatten('returns'),
+                                 'advantages':buffers[aid].flatten('advantages'),
+                                }
             
         b_inds = np.arange(args.batch_size)
         for epoch in range(args.update_epochs):
@@ -204,7 +218,7 @@ if __name__ == "__main__":
                     minibatch = {k: v[mb_inds] for k, v in flat_batches[aid].items()}
                     logs[aid] = policies[aid].update(minibatch)
         for aid in buffers:
-            avg[aid] = buffers[aid].get_average_return()
+            avg[aid] = 0.0#buffers[aid].get_average_return()
             buffers[aid].reset()
         
         policy_update_elapsed = time.time() - policy_update_start
@@ -215,7 +229,7 @@ if __name__ == "__main__":
                 torch.save(policies[a].state_dict(), f'./models/{a}/step_{global_step}') 
             sw[a].add_scalar("charts/episodic_return", avg[a], global_step)
 
-            y_pred, y_true = buffers[a].get_values().detach().cpu().numpy(), buffers[a].get_returns().detach().cpu().numpy()
+            y_pred, y_true = buffers[a].get("values").detach().cpu().numpy(), buffers[a].get("returns").detach().cpu().numpy()
             var_y = np.var(y_true)
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
             
