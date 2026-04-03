@@ -169,16 +169,26 @@ def build_mat(env_fn, agents, timesteps, num_envs, device):
     env = env_fn()
     buffer = FlexBuilder() 
     state = 0
+    max_obs = (0,0)
+    total_possible_agents = 0
     for aid in agents:
         #Agent Specific Buffers
         buffer.add(f"a{aid}_observations", shape=(timesteps,num_envs,*env.observation_space(aid)), dtype=torch.float32)
         buffer.add(f"a{aid}_actions", shape=(timesteps,num_envs,*env.action_space(aid)), dtype=torch.float32)
         buffer.add(f"a{aid}_logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
         buffer.add(f"a{aid}_rewards", shape=(timesteps,num_envs), dtype=torch.float32)
-        state += env.get_obserservation_spaces(aid)[0]
+        #state += env.get_obserservation_spaces(aid)[0]
+        if max_obs[0] > env.get_observation_spaces(aid)[0]:
+            max_obs = env.get_observation_spaces(aid)
+        total_possible_agents += 1
+        
+    
     #Info For Critic
-    #TODO Add Join STate
-    buffer.add("state", shape=(timesteps,num_envs, state), dtype=torch.float32)
+    #TODO Add Better Join State Representation
+    #First Find max agent Observation shape
+    
+    state = (max_obs[0], total_possible_agents)
+    buffer.add("state", shape=(timesteps,num_envs, *state), dtype=torch.float32)
     buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("values", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)

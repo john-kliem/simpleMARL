@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.distributions.categorical import Categorical
+from torch.distributions import Normal
 from dataclasses import dataclass
 import torch.optim as optim
 
@@ -73,9 +74,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-
-
-class PPO(nn.Module):
+class PPOContinuous(nn.Module):
     def __init__(self, obs_space, act_space, config=PPOConfig()):
         super().__init__()
         self.config = config
@@ -87,13 +86,28 @@ class PPO(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64,1), std=1.0),
         )
-        self.actor = nn.Sequential(
+        self.actor_base = nn.Sequential(
             layer_init(nn.Linear(np.array(obs_space.shape).prod(), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64,64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, act_space.n), std=0.01),
+            #layer_init(nn.Linear(64, act_space.n), std=0.01),
         )
+        self.speed_mean = layer_init(nn.Linear(64, 1), std=0.01)
+        self.heading_mean = layer_init(nn.Linear(64, 1), std=0.01)
+
+        self.speed_logstd = nn.Parameter(torch.zeros(1,1))
+        self.heading_logstd = nn.Parameter(torch.zeros(1,1))
+
+        self.speed_low, self.heading_low = act_space.low 
+        self.speed_high, self.heading_high = act_space.high
+
+        self.speed_bias = (self.speed_high + self.speed_low) / 2.0
+        self.speed_scale = (self.speed_high - self.speed_low) / 2.0
+
+        self.heading_bias = (self.heading_high + self.heading_low) / 2.0
+        self.heading_scale = (self.heading_high - self.heading_low) / 2.0
+
         self.init_optimizer()
     def init_optimizer(self):
         self.optimizer = optim.Adam(self.parameters(), lr=self.config.learning_rate, eps=1e-5)
@@ -108,11 +122,44 @@ class PPO(nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
-        logits = self.actor(x)
-        probs = Categorical(logits=logits)
+        hidden = self.actor_base(x)
+
+        #Get Mean Values
+        speed_mean = self.speed_mean(hidden)
+        heading_mean = self.heading_mean(hidden)
+
+        #Action Distributions
+        speed_std = torch.exp(self.speed_logstd)
+        heading_std = torch.exp(self.heading_logstd)
+
+        #Create Distributions
+        speed_probs = Normal(speed_mean, speed_std)
+        heading_probs = Normal(heading_mean, heading_std)
+
         if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+            speed_act = speed_probs.sample()
+            heading_act = heading_probs.sample()
+        else:
+            #Normalize the passed in actions
+            speed_act, heading_act  =  action[:, 0].unsqueeze(-1), action[:, 1].unsqueeze(-1)
+            speed_act =  (speed_act - self.speed_bias) / self.speed_scale
+            heading_act = (heading_act - self.heading_bias) / self.heading_scale
+
+        #Calculate Logprobs and entropy
+        log_prob = speed_probs.log_prob(speed_act) + heading_probs.log_prob(heading_act)
+        probs = log_prob.sum(dim=1)
+
+        #Calculate Entropy
+        entropy = (speed_probs.entropy() + heading_probs.entropy()).sum(dim=1)
+
+
+        #Unormalize Actions | Convert into desired environment ranges speed [0,3] heading [-75,75]
+        speed_act = torch.clamp(speed_act * self.speed_scale + self.speed_bias, self.speed_low, self.speed_high)
+        heading_act = torch.clamp(heading_act * self.heading_scale + self.heading_bias, self.heading_low, self.heading_high)
+
+        #We need the logprobs and entropy of both action spaces [speed,heading]
+        action = torch.cat([speed_act, heading_act], dim=1)
+        return action, probs, entropy, self.critic(x)
     
     #TODO: Save Load Optimizer
     def save(self, path=f"ppo_{time.time()}.pt"):
@@ -126,7 +173,7 @@ class PPO(nn.Module):
         #TODO: Maybe should just place larger batch earlier
         for k in mini_batch:
             if k == 'actions':
-                mini_batch[k] = mini_batch[k].long().to(self.config.device)
+                mini_batch[k] = mini_batch[k].to(self.config.device)
             else:
                 mini_batch[k] = mini_batch[k].to(self.config.device)
 
