@@ -2,7 +2,7 @@ import torch
 from collections import defaultdict
 import numpy as np
 from gymnasium import spaces
-
+from typing import Dict, Tuple, Union
 class FlexBuffer:
     def __init__(self, fields, device):
         self.cstep = 0
@@ -29,11 +29,11 @@ class FlexBuffer:
             val = getattr(self, attribute)
             if isinstance(val, torch.Tensor):
                 val.zero_()
-    def get(self, name:str) -> torch.Tensor | None:
+    def get(self, name:str) -> Union[torch.Tensor, None]:
         if not hasattr(self, name):
             return None
         return getattr(self, name)[self.cstep]
-    def flatten(self, name:str) -> torch.Tensor | None:
+    def flatten(self, name:str) -> Union[torch.Tensor, None]:
         if not hasattr(self, name):
             return
         data = getattr(self, name)[:self.cstep]

@@ -84,13 +84,13 @@ class Args:
                                                     'agent_2', 'agent_3', 
                                                     'agent_4', 'agent_5'])
     """the ID's of agents to which will be trained"""
-    policies:dict = field(default_factory=lambda:{'agent_0':"init_ppo", 
-                                                  'agent_1':"init_ppo", 
-                                                  'agent_2':"init_ppo",
-                                                  'agent_3':"init_ppo", 
-                                                  'agent_4':'init_ppo', 
-                                                  'agent_5':'init_ppo'}) #Must contain policy for every agent in pettingzooenv
-    device:str="cpu"
+    policies:dict = field(default_factory=lambda:{'agent_0':"init_ppo_continuous", 
+                                                  'agent_1':"init_ppo_continuous", 
+                                                  'agent_2':"init_ppo_continuous",
+                                                  'agent_3':"init_ppo_continuous", 
+                                                  'agent_4':'init_ppo_continuous', 
+                                                  'agent_5':'init_ppo_continuous'}) #Must contain policy for every agent in pettingzooenv
+    device:str="cpu"#torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def make_env():
     def thunk():
         import pyquaticus.utils.rewards as rew
@@ -100,7 +100,7 @@ def make_env():
                 'agent_3':rew.caps_and_grabs,
                 'agent_4':rew.caps_and_grabs,
                 'agent_5':rew.caps_and_grabs}
-        env = CompPyquaticusEnv(render_mode=None, config_dict=mctf_config, reward_config=rews)
+        env = CompPyquaticusEnv(render_mode=None, config_dict=mctf_config, reward_config=rews, action_space="continuous")
         return env
     return thunk
 if __name__ == "__main__":
@@ -163,6 +163,9 @@ if __name__ == "__main__":
         avg[aid] = 0.0
     envs = SubProcVecEnv(make_env(), args.num_workers, args.num_envs)
     for iteration in range(1, args.num_iterations+1):
+        train_info = {'avg_episode_length':0, 'avg_reward':{}, 'num_games':0}
+        for aid in policies:
+            train_info['avg_reward'][aid] = 0.0
         start_time = time.time()
         for aid in args.to_train:
             policies[aid].anneal_lr(iteration)
@@ -191,8 +194,12 @@ if __name__ == "__main__":
                         # buffers[aid].values[buffers[aid].get_step()].copy_(value.squeeze(-1))
                 actions[aid] = act.detach().cpu().numpy()
             envs.step_async(actions)
-            rets = envs.step_wait() #obs, rew, term, trunc, info
-            
+            rets, info = envs.step_wait() #obs, rew, term, trunc, info
+            for i in range(len(info['episode_lengths'])):
+                train_info['avg_episode_length'] += info['episode_lengths'][i]
+                train_info['num_games'] += 1
+                for aid in policies:
+                    train_info['avg_reward'][aid] += info['rewards'][aid][i]
             for aid in buffers:
                 buffers[aid].add("rewards", rets[aid]['rews'])#rewards[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]['rews']))
                 buffers[aid].step()
@@ -224,8 +231,8 @@ if __name__ == "__main__":
                     minibatch = {k: v[mb_inds] for k, v in flat_batches[aid].items()}
                     logs[aid] = policies[aid].update(minibatch)
         for aid in buffers:
-            avg[aid] = 0.0#buffers[aid].get_average_return()
-            buffers[aid].reset()
+            avg[aid] = train_info['avg_reward'][aid] / train_info['num_games']#0.0#buffers[aid].get_average_return()
+            #buffers[aid].reset()
         
         policy_update_elapsed = time.time() - policy_update_start
         global_step += args.num_envs * args.num_workers * args.num_steps
@@ -235,7 +242,7 @@ if __name__ == "__main__":
                 torch.save(policies[a].state_dict(), f'./models/{a}/step_{global_step}') 
             sw[a].add_scalar("charts/episodic_return", avg[a], global_step)
 
-            y_pred, y_true = buffers[a].get("values").detach().cpu().numpy(), buffers[a].get("returns").detach().cpu().numpy()
+            y_pred, y_true = buffers[a].flatten("values").detach().cpu().numpy(), buffers[a].flatten("returns").detach().cpu().numpy()
             var_y = np.var(y_true)
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
             
@@ -248,6 +255,8 @@ if __name__ == "__main__":
             sw[a].add_scalar("losses/clipfrac", logs[a]["clipfracs"], global_step)
             sw[a].add_scalar("losses/explained_variance", explained_var, global_step)
             sw[a].add_scalar("charts/SPS", int(((args.num_envs*args.num_workers*args.num_steps)/(time.time()-start_time))), global_step)
+        for aid in buffers:
+            buffers[aid].reset()
     envs.close()
 
     #Save Final Models

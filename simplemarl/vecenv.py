@@ -66,6 +66,9 @@ class SubProcVecEnv:
         self.state_views = {aid: {} for aid in self.agents}
         shm_configs = {aid: {} for aid in self.agents}
 
+        #Episode Lengths
+        self.episode_lengths = np.zeros(total_envs, dtype=np.int32)
+        self.agent_rewards = {}
         for aid in self.agents:
             specs = {
                 'obs': (total_envs, *temp_env.observation_spaces[aid].shape),
@@ -74,6 +77,7 @@ class SubProcVecEnv:
                 'truncs': (total_envs,),
                 'actions': (total_envs, *temp_env.action_spaces[aid].shape)
             }
+            self.agent_rewards[aid] = np.zeros(total_envs,dtype=np.float32)
 
             for key, shape in specs.items():
                 # Corrected type check
@@ -97,6 +101,7 @@ class SubProcVecEnv:
             self.conns.append(parent_conn)
 
     def step_async(self, actions_dict):
+       
         for aid in self.agents:
             # Direct copy of all actions into the shared memory view
             np.copyto(self.state_views[aid]['actions'], actions_dict[aid])
@@ -107,12 +112,27 @@ class SubProcVecEnv:
     def step_wait(self):
         for conn in self.conns:
             conn.recv()
-        return self.state_views
+        terminate = False
+        info = {'episode_lengths':[], 'rewards':{aid:[] for aid in self.agents}}
+        self.episode_lengths += 1
+        for i in range(self.episode_lengths.shape[0]):
+            for aid in self.agents:
+                self.agent_rewards[aid][i] += self.state_views[aid]['rews'][i]
+                if self.state_views[aid]['terms'][i] == 1 or self.state_views[aid]['truncs'][i] == 1:
+                    if aid == self.agents[0]:
+                        info['episode_lengths'].append(self.episode_lengths[i])
+                    info['rewards'][aid].append(self.agent_rewards[aid][i])
+                    self.episode_lengths[i] = 0
+                    self.agent_rewards[aid][i] = 0.0
+        return self.state_views, info
     def reset(self):
         for conn in self.conns:
             conn.send(("reset", None))
         for conn in self.conns:
             conn.recv()
+        self.episode_lengths.fill(0)
+        for aid in self.agents:
+            self.agent_rewards[aid].fill(0)
         return self.state_views
     def close(self):
         for conn in self.conns:
