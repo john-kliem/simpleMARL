@@ -61,7 +61,7 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""    
     env_id: str = "Pyquaticus"
     """the id of the environment"""
-    total_timesteps: int = 15000000
+    total_timesteps: int = 20000000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -71,7 +71,7 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     minibatch_size: int = 120
     """the number of mini-batches"""
-    update_epochs: int = 8
+    update_epochs: int = 20
     """the K epochs to update the policy"""
     # to be filled in runtime
     batch_size: int = 0
@@ -142,7 +142,7 @@ if __name__ == "__main__":
         elif args.policies[aid] == "init_ppo_continuous":
             config = ppo.PPOConfig()
             config.ent_coef = 0.1
-            config.learning_rate = 2.5e-4
+            config.learning_rate = 1.5e-4
             config.num_iterations = args.num_iterations 
             config.device = args.device
             policies[aid] = ppo.PPOContinuous(obs_spaces[aid], act_spaces[aid], config)
@@ -177,8 +177,6 @@ if __name__ == "__main__":
             for aid in args.to_train:
                 buffers[aid].add("observations", rets[aid]["obs"])
                 buffers[aid].add("dones", torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32)))
-                #buffers[aid].observations[buffers[aid].get_step()].copy_(torch.from_numpy(rets[aid]["obs"]))
-                #buffers[aid].dones[buffers[aid].get_step()].copy_(torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32)))
                 
             #Compute actions
             actions = {}
@@ -189,9 +187,7 @@ if __name__ == "__main__":
                         buffers[aid].add("actions", act.squeeze(-1))
                         buffers[aid].add("logprobs", logprob.squeeze(-1))
                         buffers[aid].add("values", value.squeeze(-1))
-                        # buffers[aid].actions[buffers[aid].get_step()].copy_(act.squeeze(-1)) #{'actions':act.squeeze(-1), 'logprobs':logprob.squeeze(-1), 'values':value.squeeze(-1)})
-                        # buffers[aid].logprobs[buffers[aid].get_step()].copy_(logprob.squeeze(-1))
-                        # buffers[aid].values[buffers[aid].get_step()].copy_(value.squeeze(-1))
+                        
                 actions[aid] = act.detach().cpu().numpy()
             envs.step_async(actions)
             rets, info = envs.step_wait() #obs, rew, term, trunc, info

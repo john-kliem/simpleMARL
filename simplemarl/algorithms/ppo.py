@@ -74,6 +74,103 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+
+class PPO(nn.Module):
+    def __init__(self, obs_space, act_space, config=PPOConfig()):
+        super().__init__()
+        self.config = config
+        self.optimizer = None
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(np.array(obs_space.shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64,1), std=1.0),
+        )
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(np.array(obs_space.shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64,64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, act_space.n), std=0.01),
+        )
+        self.init_optimizer()
+    def init_optimizer(self):
+        self.optimizer = optim.Adam(self.parameters(), lr=self.config.learning_rate, eps=1e-5)
+
+    def anneal_lr(self, iteration):
+        if self.config.anneal_lr:
+            frac = 1.0 - (iteration - 1.0) / self.config.num_iterations
+            lrnow = frac * self.config.learning_rate 
+            self.optimizer.param_groups[0]["lr"] = lrnow 
+
+    def get_value(self, x):
+        return self.critic(x)
+
+    def get_action_and_value(self, x, action=None):
+        logits = self.actor(x)
+        probs = Categorical(logits=logits)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+    
+    #TODO: Save Load Optimizer
+    def save(self, path=f"ppo_{time.time()}.pt"):
+        torch.save(self.state_dict(), path)
+    def load(self, path=None):
+        assert path != None, "Error: Missing Argument 'path'; Cannot load a model without a path"
+        return self.load_state_dict(torch.load(path))
+    def update(self, mini_batch):
+        clipfracs = []
+        #Place minibatch onto correct device 
+        #TODO: Maybe should just place larger batch earlier
+        for k in mini_batch:
+            if k == 'actions':
+                mini_batch[k] = mini_batch[k].long().to(self.config.device)
+            else:
+                mini_batch[k] = mini_batch[k].to(self.config.device)
+
+        _, newlogprob, entropy, newvalue = self.get_action_and_value(mini_batch['obs'], mini_batch['actions'])
+        logratio = newlogprob - mini_batch['logprobs']
+        ratio = logratio.exp()
+
+
+        with torch.no_grad():
+            old_approx_kl = (-logratio).mean()
+            approx_kl = ((ratio-1) - logratio).mean()
+            clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
+        if self.config.norm_adv:
+            mini_batch['advantages'] = (mini_batch['advantages'] - mini_batch['advantages'].mean()) / (mini_batch['advantages'].std() + 1e-8)
+        # Policy Loss
+        pg_loss1 = -mini_batch['advantages'] * ratio 
+        pg_loss2 = -mini_batch['advantages'] * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
+        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+        # Value Loss
+        newvalue = newvalue.view(-1)
+        if self.config.clip_vloss:
+            v_loss_unclipped = (newvalue - mini_batch['returns']) **2
+            v_clipped = mini_batch['values'] + torch.clamp(
+                newvalue - mini_batch['values'],
+                -self.config.clip_coef,
+                self.config.clip_coef
+            )
+            v_loss_clipped = (v_clipped - mini_batch['returns']) ** 2
+            v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+            v_loss = 0.5 * v_loss_max.mean()
+        else:
+            v_loss = 0.5 * ((newvalue - mini_batch['returns'])**2).mean()
+        entropy_loss = entropy.mean()
+        loss = pg_loss - self.config.ent_coef * entropy_loss + v_loss * self.config.vf_coef
+
+        self.optimizer.zero_grad()
+        loss.backward() 
+        nn.utils.clip_grad_norm_(self.parameters(), self.config.max_grad_norm)
+        self.optimizer.step()
+        
+        logs = {"v_loss":v_loss.item(), "pg_loss":pg_loss.item(), "entropy_loss":entropy_loss.item(), "old_approx_kl":old_approx_kl.item(), "approx_kl":approx_kl.item(), "clipfracs":np.mean(clipfracs)}
+        return logs
+
 class PPOContinuous(nn.Module):
     def __init__(self, obs_space, act_space, config=PPOConfig()):
         super().__init__()
@@ -91,7 +188,6 @@ class PPOContinuous(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64,64)),
             nn.Tanh(),
-            #layer_init(nn.Linear(64, act_space.n), std=0.01),
         )
         self.speed_mean = layer_init(nn.Linear(64, 1), std=0.01)
         self.heading_mean = layer_init(nn.Linear(64, 1), std=0.01)
