@@ -141,7 +141,7 @@ if __name__ == "__main__":
             policies[aid] = ppo.PPO(obs_spaces[aid], act_spaces[aid], config)
         elif args.policies[aid] == "init_ppo_continuous":
             config = ppo.PPOConfig()
-            config.ent_coef = 0.1
+            config.ent_coef = 0.0
             config.learning_rate = 1.5e-4
             config.num_iterations = args.num_iterations 
             config.device = args.device
@@ -201,7 +201,8 @@ if __name__ == "__main__":
                 buffers[aid].step()
         #Bootstrap values in all buffers GAE
         for aid in buffers:
-            next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
+            with torch.no_grad():
+                next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
             next_done = torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32))
             buffers[aid].returns_and_advantages(next_value, next_done)#calculate_returns_and_advantages(policies[aid].config.gamma, policies[aid].config.gae_lambda)
 

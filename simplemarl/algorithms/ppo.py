@@ -51,7 +51,7 @@ class PPOConfig:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.1#Maybe should be 0.1 default 0.01
+    ent_coef: float = 0.1
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -87,6 +87,7 @@ class PPO(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64,1), std=1.0),
         )
+
         self.actor = nn.Sequential(
             layer_init(nn.Linear(np.array(obs_space.shape).prod(), 64)),
             nn.Tanh(),
