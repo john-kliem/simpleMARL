@@ -65,7 +65,7 @@ class Args:
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    num_workers: int = 40
+    num_workers: int = 1
     """Number of workers running num_envs environments"""
     num_steps: int = 600
     """the number of steps to run in each environment per policy rollout"""
@@ -91,17 +91,19 @@ class Args:
                                                   'agent_4':'agent_1', 
                                                   'agent_5':'agent_0'}) #Must contain policy for every agent in pettingzooenv
     device:str="cpu"
+
+def thunk():
+    import pyquaticus.utils.rewards as rew
+    rews = {'agent_0':rew.caps_and_grabs,
+            'agent_1':rew.caps_and_grabs,
+            'agent_2':rew.caps_and_grabs,
+            'agent_3':rew.caps_and_grabs,
+            'agent_4':rew.caps_and_grabs,
+            'agent_5':rew.caps_and_grabs}
+    env = CompPyquaticusEnv(render_mode=None, config_dict=mctf_config, reward_config=rews)
+    return env
+
 def make_env():
-    def thunk():
-        import pyquaticus.utils.rewards as rew
-        rews = {'agent_0':rew.caps_and_grabs,
-                'agent_1':rew.caps_and_grabs,
-                'agent_2':rew.caps_and_grabs,
-                'agent_3':rew.caps_and_grabs,
-                'agent_4':rew.caps_and_grabs,
-                'agent_5':rew.caps_and_grabs}
-        env = CompPyquaticusEnv(render_mode=None, config_dict=mctf_config, reward_config=rews)
-        return env
     return thunk
 if __name__ == "__main__":
     args = tyro.cli(Args)
