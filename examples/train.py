@@ -186,7 +186,8 @@ if __name__ == "__main__":
                 buffers[aid].step()
         #Bootstrap values in all buffers GAE
         for aid in buffers:
-            buffers[aid].next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
+            with torch.no_grad():
+                buffers[aid].next_value = policies[aid].get_value(torch.from_numpy(rets[aid]['obs'])).squeeze(-1)
             buffers[aid].next_done = torch.from_numpy(np.logical_or(rets[aid]["terms"], rets[aid]["truncs"]).astype(np.float32))
             buffers[aid].calculate_returns_and_advantages(policies[aid].config.gamma, policies[aid].config.gae_lambda)
 
