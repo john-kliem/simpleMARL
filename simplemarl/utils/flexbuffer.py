@@ -51,8 +51,10 @@ class FlexBuffer:
         return
     def step(self,):
         self.cstep += 1
-    # def get_average_reward(self,):
-
+    def get_average_reward(self,):
+        rewards = getattr(self, "rewards").sum(dim=0)
+        dones = 1 + getattr(self, "dones").sum(dim=0)
+        return (rewards / dones).mean()
     def returns_and_advantages(self, 
                                next_value:torch.Tensor,
                                next_done:torch.Tensor,
@@ -165,6 +167,25 @@ def build_mappo(env_fn, agents, timesteps, num_envs, device):
     return buffer.build(device)
 
 
+def build_transformer_critic(env_fn, agents, timesteps, num_envs, device):
+    env = env_fn()
+    buffer = FlexBuilder() 
+    state = 0
+    for aid in agents:
+        #Agent Specific Buffers
+        buffer.add("observations", shape=(timesteps,num_envs,*env.observation_space(aid)), dtype=torch.float32)
+        buffer.add("actions", shape=(timesteps,num_envs,*env.action_space(aid)), dtype=torch.float32)
+        buffer.add("logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
+        buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+        buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
+        buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
+        buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
+        buffer.add("values", shape=(timesteps,num_envs), dtype=torch.float32)
+    #Info For Critic
+    
+    return buffer.build(device)
+
+#TODO
 def build_mat(env_fn, agents, timesteps, num_envs, device):
     env = env_fn()
     buffer = FlexBuilder() 

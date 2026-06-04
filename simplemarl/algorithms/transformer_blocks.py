@@ -4,11 +4,49 @@ import math
 
 
 
+#Normalization Layer
+class Normalization(nn.Module):
+    def __init__(self, features: int, eps:float=10**-6)->None:
+        super().__init__()
+        self.eps = eps 
+        self.alpha = nn.Parameter(torch.ones(features))
+        self.bias = nn.Parameter(torch.zeros(features))
+
+    def forward(self, x):
+        #x: (batch, seq, hidden_size)
+        mean = x.mean(dim=-1, keepdim=True) #(batch, seq, 1)
+        std=x.std(dim=-1,keepdim=True,unbiased=False) #(batch, seq, 1)
+        return self.alpha * (x-mean)/(std+self.eps) + self.bias
+    
+class FeedForward(nn.Module):
+    def __init__(self, d_model:int, d_ff:int, dropout:float):
+        super().__init__()
+        self.linear_1 = nn.Linear(d_model,d_ff) # w1 and b1
+        self.dropout=nn.Dropout(dropout)
+        self.linear_2=nn.Linear(d_ff, d_model) # w2 and b2
+
+    def forward(self, x):
+        #(batch, seq, d_model) --> (batch, seq, d_ff) --> (batch, seq, d_model)
+        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+    
+
+class ResidualConnection(nn.Module):
+    
+    def __init__(self, features: int, dropout: float) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = Normalization(features)
+
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
+
+
 class MultiHeadAttentionBlock(nn.Module):
     def __init__(self, d_model:int, h:int, dropout:float) -> None:
         super().__init__()
         self.d_model = d_model
         self.h = h 
+        print(f"d_model: {d_model} h: {h}")
         assert d_model % h == 0, "d_model must be divisible by h"
 
         self.d_k = d_model // h 
@@ -145,38 +183,3 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)# (batch, seq, d_model)
     
 
-#Normalization Layer
-class Normalization(nn.Module):
-    def __init__(self, features: int, eps:float=10**-6)->None:
-        super().__init__()
-        self.eps = eps 
-        self.alpha = nn.Parameter(torch.ones(features))
-        self.bias = nn.Parameter(torch.zeros(features))
-
-    def forward(self, x):
-        #x: (batch, seq, hidden_size)
-        mean = x.mean(dim=-1, keepdim=True) #(batch, seq, 1)
-        std=x.std(dim=-1,keepdim=True,unbiased=False) #(batch, seq, 1)
-        return self.alpha * (x-mean)/(std+self.eps) + self.bias
-    
-class FeedForward(nn.Module):
-    def __init__(self, d_model:int, d_ff:int, dropout:float):
-        super().__init__()
-        self.linear_1 = nn.Linear(d_model,d_ff) # w1 and b1
-        self.dropout=nn.Dropout(dropout)
-        self.linear_2=nn.Linear(d_ff, d_model) # w2 and b2
-
-    def forward(self, x):
-        #(batch, seq, d_model) --> (batch, seq, d_ff) --> (batch, seq, d_model)
-        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
-    
-
-class ResidualConnection(nn.Module):
-    
-    def __init__(self, features: int, dropout: float) -> None:
-        super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.norm = Normalization(features)
-
-    def forward(self, x, sublayer):
-        return x + self.dropout(sublayer(self.norm(x)))

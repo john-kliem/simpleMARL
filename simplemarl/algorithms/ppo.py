@@ -284,11 +284,12 @@ class PPOContinuous(nn.Module):
             approx_kl = ((ratio-1) - logratio).mean()
             clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
         # mini_batch['advant÷ages'] = (mini_batch['advantages'] - mini_batch['advantages'].mean()) / (mini_batch['advantages'].std() + 1e-8)
+        advantages = mini_batch['advantages'].clone()
         if self.config.norm_adv:
-            mini_batch['advantages'] = (mini_batch['advantages'] - mini_batch['advantages'].mean()) / (mini_batch['advantages'].std() + 1e-8)
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         # Policy Loss
-        pg_loss1 = -mini_batch['advantages'] * ratio 
-        pg_loss2 = -mini_batch['advantages'] * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
+        pg_loss1 = -advantages * ratio 
+        pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
         pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
         # Value Loss
