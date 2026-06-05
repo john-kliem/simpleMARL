@@ -66,7 +66,7 @@ class PPOConfig:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-
+    device:str="cuda" if torch.cuda.is_available() else "cpu"
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -78,6 +78,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class PPO(nn.Module):
     def __init__(self, obs_space, act_space, config=PPOConfig()):
         super().__init__()
+        self.device = config.device
         self.config = config
         self.optimizer = None
         self.critic = nn.Sequential(
@@ -95,6 +96,7 @@ class PPO(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, act_space.n), std=0.01),
         )
+        self.to(self.device)
         self.init_optimizer()
     def init_optimizer(self):
         self.optimizer = optim.Adam(self.parameters(), lr=self.config.learning_rate, eps=1e-5)
@@ -104,7 +106,6 @@ class PPO(nn.Module):
             frac = 1.0 - (iteration - 1.0) / self.config.num_iterations
             lrnow = frac * self.config.learning_rate 
             self.optimizer.param_groups[0]["lr"] = lrnow 
-
     def get_value(self, x):
         return self.critic(x)
 
@@ -125,11 +126,6 @@ class PPO(nn.Module):
         clipfracs = []
         #Place minibatch onto correct device 
         #TODO: Maybe should just place larger batch earlier
-        for k in mini_batch:
-            if k == 'actions':
-                mini_batch[k] = mini_batch[k].long().to(self.config.device)
-            else:
-                mini_batch[k] = mini_batch[k].to(self.config.device)
 
         _, newlogprob, entropy, newvalue = self.get_action_and_value(mini_batch['obs'], mini_batch['actions'])
         logratio = newlogprob - mini_batch['logprobs']
@@ -140,8 +136,9 @@ class PPO(nn.Module):
             old_approx_kl = (-logratio).mean()
             approx_kl = ((ratio-1) - logratio).mean()
             clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
+        advantages = mini_batch['advantages'].clone()
         if self.config.norm_adv:
-            mini_batch['advantages'] = (mini_batch['advantages'] - mini_batch['advantages'].mean()) / (mini_batch['advantages'].std() + 1e-8)
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         # Policy Loss
         pg_loss1 = -mini_batch['advantages'] * ratio 
         pg_loss2 = -mini_batch['advantages'] * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
@@ -204,7 +201,7 @@ class PPOContinuous(nn.Module):
 
         self.heading_bias = (self.heading_high + self.heading_low) / 2.0
         self.heading_scale = (self.heading_high - self.heading_low) / 2.0
-
+        self.to(self.config.device)
         self.init_optimizer()
     def init_optimizer(self):
         self.optimizer = optim.Adam(self.parameters(), lr=self.config.learning_rate, eps=1e-5)
@@ -236,27 +233,22 @@ class PPOContinuous(nn.Module):
         if action is None:
             speed_act = speed_probs.sample()
             heading_act = heading_probs.sample()
+
+            speed_out = torch.clamp(speed_act * self.speed_scale + self.speed_bias, self.speed_low, self.speed_high)
+            heading_out = torch.clamp(heading_act * self.heading_scale + self.heading_bias, self.heading_low, self.heading_high)
+            action = torch.cat([speed_out, heading_out], dim=1)
         else:
             #Normalize the passed in actions
-            speed_act, heading_act  =  action[:, 0].unsqueeze(-1), action[:, 1].unsqueeze(-1)
-            speed_act =  (speed_act - self.speed_bias) / self.speed_scale
-            heading_act = (heading_act - self.heading_bias) / self.heading_scale
-
+            speed_act = (action[:, 0].unsqueeze(-1) - self.speed_bias) / self.speed_scale
+            heading_act = (action[:, 1].unsqueeze(-1) - self.heading_bias) / self.heading_scale
+            action = torch.cat([speed_act, heading_act], dim=1)
         #Calculate Logprobs and entropy
-        log_prob = speed_probs.log_prob(speed_act) + heading_probs.log_prob(heading_act)
-        probs = log_prob.sum(dim=1)
-
+        log_probs = (speed_probs.log_prob(speed_act) + heading_probs.log_prob(heading_act)).squeeze(-1)
         #Calculate Entropy
-        entropy = (speed_probs.entropy() + heading_probs.entropy()).sum(dim=1)
-
-
-        #Unormalize Actions | Convert into desired environment ranges speed [0,3] heading [-75,75]
-        speed_act = torch.clamp(speed_act * self.speed_scale + self.speed_bias, self.speed_low, self.speed_high)
-        heading_act = torch.clamp(heading_act * self.heading_scale + self.heading_bias, self.heading_low, self.heading_high)
+        entropy = (speed_probs.entropy() + heading_probs.entropy()).squeeze(-1)
 
         #We need the logprobs and entropy of both action spaces [speed,heading]
-        action = torch.cat([speed_act, heading_act], dim=1)
-        return action, probs, entropy, self.critic(x)
+        return action, log_probs, entropy, self.critic(x)
     
     #TODO: Save Load Optimizer
     def save(self, path=f"ppo_{time.time()}.pt"):
@@ -266,14 +258,7 @@ class PPOContinuous(nn.Module):
         return self.load_state_dict(torch.load(path))
     def update(self, mini_batch):
         clipfracs = []
-        #Place minibatch onto correct device 
-        #TODO: Maybe should just place larger batch earlier
-        for k in mini_batch:
-            if k == 'actions':
-                mini_batch[k] = mini_batch[k].to(self.config.device)
-            else:
-                mini_batch[k] = mini_batch[k].to(self.config.device)
-
+ 
         _, newlogprob, entropy, newvalue = self.get_action_and_value(mini_batch['obs'], mini_batch['actions'])
         logratio = newlogprob - mini_batch['logprobs']
         ratio = logratio.exp()
@@ -283,7 +268,6 @@ class PPOContinuous(nn.Module):
             old_approx_kl = (-logratio).mean()
             approx_kl = ((ratio-1) - logratio).mean()
             clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
-        # mini_batch['advant÷ages'] = (mini_batch['advantages'] - mini_batch['advantages'].mean()) / (mini_batch['advantages'].std() + 1e-8)
         advantages = mini_batch['advantages'].clone()
         if self.config.norm_adv:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
