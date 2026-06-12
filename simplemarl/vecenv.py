@@ -33,7 +33,7 @@ def worker_pettingzoo_zerocopy(conn, env_fn, num_envs, start_idx, shm_config):
                 #Check state for terms
                 obs, rews, terms, truncs, _ = env.step(actions)
                 
-                if any(terms.values()) or any(truncs.values()):
+                if any(terms.values()):
                     obs, _ = env.reset()
                 for aid in agents:
                     shms[aid]['obs'][i] = obs[aid]
