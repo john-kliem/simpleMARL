@@ -3,6 +3,7 @@ from collections import defaultdict
 import numpy as np
 from gymnasium import spaces
 from typing import Dict, Tuple, Union
+
 class FlexBuffer:
     def __init__(self, fields, device):
         self.cstep = 0
@@ -154,16 +155,26 @@ def build_critic(env_fn, agents,timesteps, num_envs, device):
     env = env_fn()
     env.reset()
     buffer = FlexBuilder() 
-    obs_list = []
-    for aid in agents:
-        obs = env.get_observation(aid)   
-        obs_list.append(obs)
-    joint_obs = np.stack(obs_list, axis=0)
-    num_agents, obs_dim = joint_obs.shape
-    buffer.add("joint_state", shape=(timesteps,num_envs, num_agents, obs_dim), dtype=torch.float32)
+    obs_dim = env.observation_space(agents[agents[0]]).shape[0]
+    buffer.add("joint_state", shape=(timesteps,num_envs, len(agents), obs_dim), dtype=torch.float32)
     buffer.add("joint_value", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
+    return buffer.build(device)
+
+def build_mappo_critic(env_fn, agents, timesteps, num_envs, device):
+    env = env_fn()
+    env.reset()
+    buffer = FlexBuilder()
+    obs_dim = env.observation_space(agents[0]).shape[0]
+    joint_obs_dim = obs_dim * len(agents)  # flattened joint obs
+
+    buffer.add("joint_state", shape=(timesteps, num_envs, joint_obs_dim), dtype=torch.float32)  # flat
+    buffer.add("joint_value", shape=(timesteps, num_envs), dtype=torch.float32)  # keep trailing dim to match critic output
+    buffer.add("advantages", shape=(timesteps, num_envs), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps, num_envs), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps, num_envs), dtype=torch.float32)
     buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
     return buffer.build(device)

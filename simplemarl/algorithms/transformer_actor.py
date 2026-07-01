@@ -9,47 +9,7 @@ import torch.optim as optim
 import math 
 
 from simplemarl.algorithms.transformer_blocks import MultiHeadAttentionBlock, EncoderBlock, Encoder, Decoder, DecoderBlock, ProjectionLayer, InputEmbedding, PositionalEncoding, Normalization, FeedForward, ResidualConnection
-
-@dataclass
-class TransformerConfig:
-    seed: int = 10
-    """seed of the experiment"""
-    device:str = "cpu"
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    
-    tgt_size:int = 0
-    """Size or shape of output action space"""
-
-    src_seq:int = 0
-    """MAX sequence length of input"""
-    tgt_seq:int = 0
-    """MAX sequence length of output"""
-    d_model:int = 128
-    """Size of internal state representation"""
-    num_blocks:int=1
-    """number of encoder/decoder blocks"""
-    num_heads:int=2
-    """number of heads used in multi-head attention block"""
-    dropout:float=0.0 
-    """Probability of randomly setting NN activations to zero during training (prevent overfitting)"""
-    d_ff:int=d_model
-    """Dimension of the hidden layer inside the Feed-Forward Network block"""
-    vocab_size:int = 0
-    """Size of single agent observation set at runtime"""
-    critic_residual_connection:bool = True
-    """Size of single agent observation set at runtime"""
-    learning_rate:float = 2.5e-4
-    clip_vloss:bool = True
-    clip_coef:float = 0.2
-    vf_coef:float = 0.5
-    anneal_lr:bool = True
-    num_iterations:int = 0
-    max_grad_norm:float = 0.5
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
+from simplemarl.algorithms.transformer import TransformerConfig
 
 #Vars to set in config
 
@@ -58,7 +18,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-class CriticTransformerBlock(nn.Module):
+class ActorTransformerBlock(nn.Module):
     def __init__(self, d_model: int, num_heads: int, dropout: float, device):
         super().__init__()
         self.device = device
@@ -80,21 +40,22 @@ class CriticTransformerBlock(nn.Module):
         return self.residual_mlp_connections(x, self.mlp)
 
 
-#Centralized Critic
+# Actor
 # Architecture:
 #   N Critic Blocks
 #       MultiHead Attation
 #       Add + Norm
 #   MLP
-#   State Value
-class TransformerCritic(nn.Module):
-    def __init__(self, config = TransformerConfig()):
+#   Action
+class TransformerActor(nn.Module):
+    def __init__(self, config = TransformerConfig(), act_space=None):
         super().__init__()
         self.config = config
+        self.act_space = act_space
         self.proj_layer = nn.Sequential(layer_init(nn.Linear(self.config.vocab_size, self.config.d_model)))
         # We use nn.ModuleList so PyTorch tracks all sublayer weights
         self.blocks = nn.ModuleList([
-            CriticTransformerBlock(self.config.d_model, self.config.num_heads, self.config.dropout, self.config.device) 
+            ActorTransformerBlock(self.config.d_model, self.config.num_heads, self.config.dropout, self.config.device) 
             for _ in range(self.config.num_blocks)
         ])
         
@@ -102,12 +63,12 @@ class TransformerCritic(nn.Module):
         self.final_norm = Normalization(self.config.d_model)
 
         #Maybe Make Value head MLP rather than one linear layer
-        self.value_head = nn.Sequential(
+        self.action_head = nn.Sequential(
             layer_init(nn.Linear(self.config.d_model, self.config.d_model)),
             nn.ReLU(),
             layer_init(nn.Linear(self.config.d_model, self.config.d_model)),
             nn.ReLU(),
-            layer_init(nn.Linear(self.config.d_model, 1), std=1.0),
+            layer_init(nn.Linear(self.config.d_model, self.act_space), std=0.01),
         )
        
         self.optimizer = None 
@@ -122,54 +83,56 @@ class TransformerCritic(nn.Module):
             frac = 1.0 - (iteration - 1.0) / self.config.num_iterations
             lrnow = frac * self.config.learning_rate 
             self.optimizer.param_groups[0]["lr"] = lrnow
-            
-    def get_value(self, x):
-        #x = x.to(self.config.device)
+    
+    def get_action(self, x, action=None):
         if x.dim() == 2:
             x = x.unsqueeze(1)
+
         x = self.proj_layer(x)
         # Process the sequence through each Transformer block
         for block in self.blocks:
             x = block(x)
-            
         # Apply final normalization
         x = self.final_norm(x)
         x = x.mean(dim=1)
         # Output a single scalar state-value estimate (Value Function V(s))
-        return self.value_head(x).squeeze(-1)
-    
+        x = self.action_head(x)
+        probs = Categorical(logits=x)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action), probs.entropy()
+
     def update(self, mini_batch):
-        #Critic Update
+        clipfracs = []
         #Place minibatch onto correct device 
         #TODO: Maybe should just place larger batch earlier
-        for k in mini_batch:
-            if k == 'actions':
-                mini_batch[k] = mini_batch[k]#.to(self.config.device)
-            else:
-                mini_batch[k] = mini_batch[k]#.to(self.config.device)
 
-        newvalue = self.get_value(mini_batch['obs'])
+        _, newlogprob, entropy = self.get_action(mini_batch['obs'], mini_batch['actions'])
+        logratio = newlogprob - mini_batch['logprobs']
+        ratio = logratio.exp()
 
-        # Value Loss
-        # newvalue = newvalue.view(-1)
-        if self.config.clip_vloss:
-            v_loss_unclipped = (newvalue - mini_batch['returns']) **2
-            v_clipped = mini_batch['values'] + torch.clamp(
-                newvalue - mini_batch['values'],
-                -self.config.clip_coef,
-                self.config.clip_coef
-            )
-            v_loss_clipped = (v_clipped - mini_batch['returns']) ** 2
-            v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-            v_loss = 0.5 * v_loss_max.mean()
-        else:
-            v_loss = 0.5 * ((newvalue - mini_batch['returns'])**2).mean()
-        loss = v_loss * self.config.vf_coef
+
+        with torch.no_grad():
+            old_approx_kl = (-logratio).mean()
+            approx_kl = ((ratio-1) - logratio).mean()
+            clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
+        advantages = mini_batch['advantages'].clone()
+        if self.config.norm_adv:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Policy Loss
+        pg_loss1 = -advantages * ratio 
+        pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
+        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+        
+        entropy_loss = entropy.mean()
+        loss = pg_loss - self.config.ent_coef * entropy_loss
 
         self.optimizer.zero_grad()
         loss.backward() 
         nn.utils.clip_grad_norm_(self.parameters(), self.config.max_grad_norm)
         self.optimizer.step()
         
-        logs = {"v_loss":v_loss.item(), "pg_loss":None, "entropy_loss":None, "old_approx_kl":None, "approx_kl":None, "clipfracs":None}
+        logs = {"v_loss":None, "pg_loss":pg_loss.item(), "entropy_loss":entropy_loss.item(), "old_approx_kl":old_approx_kl.item(), "approx_kl":approx_kl.item(), "clipfracs":np.mean(clipfracs)}
         return logs
+    
