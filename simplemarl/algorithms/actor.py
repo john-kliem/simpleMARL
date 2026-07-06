@@ -67,6 +67,7 @@ class ActorConfig:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
     device: str = "cpu"
+    masking: bool = False
 
 
 
@@ -108,6 +109,10 @@ class Actor(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), None
+    def get_discrete_action(self, x):
+        logits = self.actor(x)
+        action = logits.argmax()
+        return action
     
     #TODO: Save Load Optimizer
     def save(self, path=None):
@@ -148,12 +153,20 @@ class Actor(nn.Module):
         if self.config.norm_adv:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
+        # Policy masking
+        
+        active_mask = 1.0 - mini_batch['dones'].squeeze()
+        mask_sum = active_mask.sum() + 1e-8  # avoid div-by-zero if all agents dead in batch
+        
+
         # Policy Loss
         pg_loss1 = -advantages * ratio 
         pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
-        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+        pg_loss = torch.max(pg_loss1, pg_loss2)
+        pg_loss = (pg_loss * active_mask).sum() / mask_sum 
 
-        entropy_loss = entropy.mean()
+
+        entropy_loss = (entropy*active_mask).sum() / mask_sum
         loss = pg_loss - self.config.ent_coef * entropy_loss
 
         self.optimizer.zero_grad()

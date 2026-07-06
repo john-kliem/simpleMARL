@@ -115,7 +115,10 @@ class PPO(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
-    
+    def get_discrete_action(self, x):
+        logits = self.actor(x)
+        action = logits.argmax()
+        return action
     #TODO: Save Load Optimizer
     def save(self, path=f"ppo_{time.time()}.pt"):
         torch.save(self.state_dict(), path)
