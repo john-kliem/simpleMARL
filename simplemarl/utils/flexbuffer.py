@@ -147,7 +147,20 @@ def build_ippo(env_fn, agent, timesteps, num_envs, device):
     buffer.add("logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
     return buffer.build(device)
-
+#Includes all attributes necessary for global critic
+def build_mat_critic(env_fn, agents,timesteps, num_envs, device):
+    """Builds one buffer for 'agent' that contains everything needed for training a PPO algorithm"""
+    env = env_fn()
+    env.reset()
+    buffer = FlexBuilder() 
+    obs_dim = env.observation_space(agents[agents[0]]).shape[0]
+    buffer.add("joint_state", shape=(timesteps,num_envs, len(agents), obs_dim), dtype=torch.float32)
+    buffer.add("joint_value", shape=(timesteps,num_envs,len(agents)), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
+    return buffer.build(device)
 
 #Includes all attributes necessary for global critic
 def build_critic(env_fn, agents,timesteps, num_envs, device):

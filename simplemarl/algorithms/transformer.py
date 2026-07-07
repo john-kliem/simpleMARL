@@ -19,13 +19,11 @@ class TransformerConfig:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    
     tgt_size:int = 0
     """Size or shape of output action space"""
-
-    src_seq:int = 0
+    src_seq:int = 5
     """MAX sequence length of input"""
-    tgt_seq:int = 0
+    tgt_seq:int = 1
     """MAX sequence length of output"""
     d_model:int = 128
     """Size of internal state representation"""
@@ -50,7 +48,8 @@ class TransformerConfig:
     max_grad_norm:float = 0.5
     norm_adv: bool = True
     """Toggles advantages normalization"""
-
+    ent_coef:float = 0.01
+    device = "cpu"
 #Vars to set in config
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
