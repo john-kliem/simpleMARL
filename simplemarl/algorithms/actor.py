@@ -155,18 +155,18 @@ class Actor(nn.Module):
         
         # Policy masking
         
-        active_mask = 1.0 - mini_batch['dones'].squeeze()
-        mask_sum = active_mask.sum() + 1e-8  # avoid div-by-zero if all agents dead in batch
+        #active_mask = 1.0 - mini_batch['dones'].squeeze()
+        #mask_sum = active_mask.sum() + 1e-8  # avoid div-by-zero if all agents dead in batch
         
 
         # Policy Loss
         pg_loss1 = -advantages * ratio 
         pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
         pg_loss = torch.max(pg_loss1, pg_loss2)
-        pg_loss = (pg_loss * active_mask).sum() / mask_sum 
+        pg_loss = pg_loss.mean() 
 
 
-        entropy_loss = (entropy*active_mask).sum() / mask_sum
+        entropy_loss = entropy.mean()
         loss = pg_loss - self.config.ent_coef * entropy_loss
 
         self.optimizer.zero_grad()
