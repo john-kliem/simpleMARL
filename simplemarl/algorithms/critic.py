@@ -128,7 +128,7 @@ class Critic(nn.Module):
             else:
                 mini_batch[k] = mini_batch[k]#.to(self.config.device)
 
-        newvalue = self.get_value(mini_batch['obs'])
+        newvalue = self.get_value(mini_batch['obs']).view(-1)
 
         # Value Loss
         # newvalue = newvalue.view(-1)
