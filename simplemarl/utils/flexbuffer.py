@@ -195,6 +195,26 @@ def build_mappo(env_fn, agents, timesteps, num_envs, device):
 
     #Joint State assumes every agent has same observation shape
     obs_dim = env.observation_space(agents[0]).shape[0]
-    joint_obs_dim = obs_dim * len(agents) + len(agents)  # flattened joint obs
+    joint_obs_dim = obs_dim * len(agents) #+ len(agents)  # flattened joint obs
     buffer.add("joint_state", shape=(timesteps, num_envs, joint_obs_dim), dtype=torch.float32)  # flat
+    return buffer.build(device)
+
+def build_mat(env_fn, agents, timesteps, num_envs, device):
+
+    env = env_fn()
+    env.reset()
+    buffer = FlexBuilder() 
+    buffer.add("observations", shape=(timesteps,num_envs, *env.observation_space(agents[0]).shape), dtype=torch.float32)
+    buffer.add("actions", shape=(timesteps,num_envs, *env.action_space(agents[0]).shape), dtype=torch.float32)
+    buffer.add("values", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
+
+    obs_dim = env.observation_space(agents[0]).shape[0]
+    buffer.add("joint_state", shape=(timesteps,num_envs, len(agents), obs_dim), dtype=torch.float32)
+    buffer.add("joint_value", shape=(timesteps,num_envs), dtype=torch.float32)
+    env.close()
     return buffer.build(device)

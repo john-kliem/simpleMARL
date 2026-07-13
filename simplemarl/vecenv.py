@@ -6,53 +6,66 @@ import multiprocessing as mp
 import numpy as np
 from multiprocessing import shared_memory
 
+
+def _make_shm(shm_blocks, shape, dtype):
+    """Allocate one shared memory block, register it, and return a local ndarray view."""
+    nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
+    shm = shared_memory.SharedMemory(create=True, size=nbytes)
+    shm_blocks.append(shm)
+    view = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+    conf = {'name': shm.name, 'shape': shape, 'dtype': dtype}
+    return view, conf
+
+
 def worker_pettingzoo_zerocopy(conn, env_fn, num_envs, start_idx, shm_config):
-    # Create the local sub-environments for this worker
     envs = [env_fn() for _ in range(num_envs)]
     agents = envs[0].agents
-    
-    # Map to shared memory
+
     shm_objs = []
     shms = {aid: {} for aid in agents}
     for aid in agents:
         for key, conf in shm_config[aid].items():
-            # Attach to the FULL block
-           
             shm = shared_memory.SharedMemory(name=conf['name'])
             shm_objs.append(shm)
-            full_block = np.ndarray(conf['shape'], dtype=conf['dtype'], buffer=shm.buf)
-            # Create a VIEW of just this worker's assigned rows
-            shms[aid][key] = full_block[start_idx : start_idx + num_envs]
+            full = np.ndarray(conf['shape'], dtype=conf['dtype'], buffer=shm.buf)
+            shms[aid][key] = full[start_idx: start_idx + num_envs]
+
+    # Single shared critic-state block, not per-agent
+    state_conf = shm_config['state']
+    state_shm = shared_memory.SharedMemory(name=state_conf['name'])
+    shm_objs.append(state_shm)
+    state_full = np.ndarray(state_conf['shape'], dtype=state_conf['dtype'], buffer=state_shm.buf)
+    state_view = state_full[start_idx: start_idx + num_envs]
+
     while True:
         cmd, _ = conn.recv()
-        if cmd == "step":
-            for i, env in enumerate(envs):
-                # The worker reads actions directly from its shared view
-                # Actions were placed there by the main process
-                actions = {aid: int(shms[aid]['actions'][i]) if isinstance(env.action_spaces[aid], Discrete) else shms[aid]['actions'][i] for aid in agents}
-                #Check state for terms
-                obs, rews, terms, truncs, _ = env.step(actions)
-                
+        if cmd == "close":
+            break
+
+        for i, env in enumerate(envs):
+            if cmd == "step":
+                actions = {aid: int(shms[aid]['actions'][i]) if isinstance(env.action_spaces[aid], Discrete)
+                           else shms[aid]['actions'][i] for aid in agents}
+                obs, rews, terms, truncs, state = env.step(actions)
                 if any(terms.values()):
-                    obs, _ = env.reset()
+                    obs, state = env.reset()
                 for aid in agents:
-                    shms[aid]['obs'][i] = obs[aid]
-                    shms[aid]['rews'][i] = rews[aid] 
+                    shms[aid]['rews'][i] = rews[aid]
                     shms[aid]['terms'][i] = terms[aid]
                     shms[aid]['truncs'][i] = truncs[aid]
-            
-            conn.send("Done")
-        elif cmd == "reset":
-            for i,env in enumerate(envs):
-                obs,_ = env.reset()
-                for aid in obs:
-                    shms[aid]['obs'][i] = obs[aid]
-                    shms[aid]['terms'][i] = 0.0
-                    shms[aid]['terms'][i] = 0.0 
+            else:  # "reset"
+                obs, state = env.reset()
+                for aid in agents:
                     shms[aid]['rews'][i] = 0.0
-            conn.send("Done")
-        elif cmd == "close":
-            break
+                    shms[aid]['terms'][i] = 0.0
+                    shms[aid]['truncs'][i] = 0.0
+
+            for aid in agents:
+                shms[aid]['obs'][i] = obs[aid]
+            state_view[i] = state
+
+        conn.send("Done")
+
 
 class SubProcVecEnv:
     def __init__(self, env_fn, num_workers, num_envs_per_worker):
@@ -61,70 +74,63 @@ class SubProcVecEnv:
         self.num_workers = num_workers
         self.num_envs_per_worker = num_envs_per_worker
         total_envs = num_workers * num_envs_per_worker
-        
+
         self.shm_blocks = []
         self.state_views = {aid: {} for aid in self.agents}
-        shm_configs = {aid: {} for aid in self.agents}
-
-        #Episode Lengths
+        self.agent_rewards = {aid: np.zeros(total_envs, dtype=np.float32) for aid in self.agents}
         self.episode_lengths = np.zeros(total_envs, dtype=np.int32)
-        self.agent_rewards = {}
+
+        shm_configs = {aid: {} for aid in self.agents}
         for aid in self.agents:
             specs = {
-                'obs': (total_envs, *temp_env.observation_spaces[aid].shape),
-                'rews': (total_envs,),
-                'terms': (total_envs,),
-                'truncs': (total_envs,),
-                'actions': (total_envs, *temp_env.action_spaces[aid].shape)
+                'obs':     ((total_envs, *temp_env.observation_spaces[aid].shape), np.float32),
+                'actions': ((total_envs, *temp_env.action_spaces[aid].shape),      np.float32),
+                'rews':    ((total_envs,), np.float32),
+                'terms':   ((total_envs,), np.bool_),
+                'truncs':  ((total_envs,), np.bool_),
             }
-            self.agent_rewards[aid] = np.zeros(total_envs,dtype=np.float32)
+            for key, (shape, dtype) in specs.items():
+                view, conf = _make_shm(self.shm_blocks, shape, dtype)
+                self.state_views[aid][key] = view
+                shm_configs[aid][key] = conf
 
-            for key, shape in specs.items():
-                # Corrected type check
-                dtype = np.float32 if key in ['obs', 'rews', 'actions'] else np.bool_
-                nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
-                
-                shm = shared_memory.SharedMemory(create=True, size=nbytes)
-                self.shm_blocks.append(shm)
-                
-                self.state_views[aid][key] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
-                shm_configs[aid][key] = {'name': shm.name, 'shape': shape, 'dtype': dtype}
+        # One shared critic-state block for all agents/workers: (total_envs, num_agents, obs_dim)
+        state_shape = (total_envs, *temp_env.get_state().shape)
+        self.critic_state_view, state_conf = _make_shm(self.shm_blocks, state_shape, np.float32)
+        shm_configs['state'] = state_conf
 
         self.conns = []
         for i in range(num_workers):
             parent_conn, child_conn = mp.Pipe()
             start_idx = i * num_envs_per_worker
-            p = mp.Process(target=worker_pettingzoo_zerocopy, 
-                           args=(child_conn, env_fn, num_envs_per_worker, start_idx, shm_configs))
+            p = mp.Process(target=worker_pettingzoo_zerocopy,
+                            args=(child_conn, env_fn, num_envs_per_worker, start_idx, shm_configs))
             p.daemon = True
             p.start()
             self.conns.append(parent_conn)
 
     def step_async(self, actions_dict):
-       
         for aid in self.agents:
-            # Direct copy of all actions into the shared memory view
             np.copyto(self.state_views[aid]['actions'], actions_dict[aid])
-        
         for conn in self.conns:
             conn.send(("step", None))
-        
+
     def step_wait(self):
         for conn in self.conns:
             conn.recv()
-        terminate = False
-        info = {'episode_lengths':[], 'rewards':{aid:[] for aid in self.agents}}
+        info = {'episode_lengths': [], 'rewards': {aid: [] for aid in self.agents}}
         self.episode_lengths += 1
         for i in range(self.episode_lengths.shape[0]):
             for aid in self.agents:
                 self.agent_rewards[aid][i] += self.state_views[aid]['rews'][i]
-                if self.state_views[aid]['terms'][i] == 1 or self.state_views[aid]['truncs'][i] == 1:
+                if self.state_views[aid]['terms'][i] or self.state_views[aid]['truncs'][i]:
                     if aid == self.agents[0]:
                         info['episode_lengths'].append(self.episode_lengths[i])
                     info['rewards'][aid].append(self.agent_rewards[aid][i])
                     self.episode_lengths[i] = 0
                     self.agent_rewards[aid][i] = 0.0
-        return self.state_views, info
+        return self.state_views, self.critic_state_view, info
+
     def reset(self):
         for conn in self.conns:
             conn.send(("reset", None))
@@ -133,14 +139,16 @@ class SubProcVecEnv:
         self.episode_lengths.fill(0)
         for aid in self.agents:
             self.agent_rewards[aid].fill(0)
-        return self.state_views
+        return self.state_views, self.critic_state_view
+
     def close(self):
         for conn in self.conns:
             conn.send(("close", None))
         for shm in self.shm_blocks:
             shm.close()
             shm.unlink()
-    
+
+
 
 #TODO Pass in memory space and directly assign values to shared space
 def worker_pettingzoo(conn, env):

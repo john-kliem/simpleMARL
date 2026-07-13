@@ -133,7 +133,7 @@ class TransformerCritic(nn.Module):
             
         # Apply final normalization
         x = self.final_norm(x)
-        x = x.mean(dim=1)
+        # x = x.mean(dim=1)
         # Output a single scalar state-value estimate (Value Function V(s))
         return self.value_head(x).squeeze(-1)
     
