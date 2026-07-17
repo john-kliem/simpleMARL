@@ -213,8 +213,9 @@ def build_mat(env_fn, agents, timesteps, num_envs, device):
     buffer.add("logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
     buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
 
-    obs_dim = env.observation_space(agents[0]).shape[0]
-    buffer.add("joint_state", shape=(timesteps,num_envs, len(agents), obs_dim), dtype=torch.float32)
-    buffer.add("joint_value", shape=(timesteps,num_envs), dtype=torch.float32)
+    state_space = env.state_space.shape
+    print(f"State Space {state_space}")
+    buffer.add("joint_state", shape=(timesteps,num_envs, *state_space), dtype=torch.float32)
+    buffer.add("joint_value", shape=(timesteps,num_envs, len(agents)), dtype=torch.float32)
     env.close()
     return buffer.build(device)

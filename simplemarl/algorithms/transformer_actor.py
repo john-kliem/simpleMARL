@@ -86,7 +86,7 @@ class TransformerActor(nn.Module):
     
     def get_action(self, x, action=None):
         if x.dim() == 2:
-            x = x.unsqueeze(1)
+            x = x.unsqueeze(0)
 
         x = self.proj_layer(x)
         # Process the sequence through each Transformer block
@@ -94,7 +94,7 @@ class TransformerActor(nn.Module):
             x = block(x)
         # Apply final normalization
         x = self.final_norm(x)
-        x = x.mean(dim=1)
+        x = x[:,0]#x.mean(dim=1)
         # Output a single scalar state-value estimate (Value Function V(s))
         x = self.action_head(x)
         probs = Categorical(logits=x)
