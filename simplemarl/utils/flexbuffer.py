@@ -219,3 +219,46 @@ def build_mat(env_fn, agents, timesteps, num_envs, device):
     buffer.add("joint_value", shape=(timesteps,num_envs, len(agents)), dtype=torch.float32)
     env.close()
     return buffer.build(device)
+
+def build_mat_defense(env_fn, agents, timesteps, num_envs, device, team_size):
+
+    env = env_fn()
+    env.reset()
+    buffer = FlexBuilder() 
+    buffer.add("observations", shape=(timesteps,num_envs, *env.observation_space(agents[0]).shape), dtype=torch.float32)
+    buffer.add("actions", shape=(timesteps,num_envs, *env.action_space(agents[0]).shape), dtype=torch.float32)
+    buffer.add("values", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("logprobs", shape=(timesteps,num_envs), dtype=torch.float32)
+    buffer.add("dones", shape=(timesteps, num_envs), dtype=torch.float32)
+
+    state_space = env.state_space.shape
+    print(f"State Space {state_space}")
+    buffer.add("joint_state", shape=(timesteps,num_envs, *state_space), dtype=torch.float32)
+    buffer.add("joint_value", shape=(timesteps,num_envs, team_size), dtype=torch.float32)
+    env.close()
+    return buffer.build(device)
+
+def build_vectorized_buffer(env, num_players, timesteps, num_envs, device):
+    env.reset()
+    buffer = FlexBuilder() 
+    
+    # Store agents as an explicit dimension [timesteps, num_envs, num_players, features]
+    # Features is the single agent observation shape
+    print("Action Space: ", env.action_space.n)
+    buffer.add("observations", shape=(timesteps, num_envs, *env.observation_space.shape), dtype=torch.float32)
+    buffer.add("actions", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("values", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("logprobs", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("dones", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    
+    # Joint critic state: [timesteps, num_envs, state_dim]
+    buffer.add("joint_state", shape=(timesteps, num_envs, *env.state_space.shape), dtype=torch.float32)
+    
+    env.close()
+    return buffer.build(device)

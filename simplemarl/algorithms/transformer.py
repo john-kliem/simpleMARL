@@ -137,18 +137,14 @@ class TransformerCritic(nn.Module):
         # Output a single scalar state-value estimate (Value Function V(s))
         return self.value_head(x).squeeze(-1)
     
-    def update(self, mini_batch):
+    def update(self, mini_batch, col_idx=None):
         #Critic Update
         #Place minibatch onto correct device 
         #TODO: Maybe should just place larger batch earlier
-        for k in mini_batch:
-            if k == 'actions':
-                mini_batch[k] = mini_batch[k]#.to(self.config.device)
-            else:
-                mini_batch[k] = mini_batch[k]#.to(self.config.device)
 
         newvalue = self.get_value(mini_batch['obs'])
-
+        if col_idx is not None:
+            newvalue = newvalue[:, col_idx]
         # Value Loss
         # newvalue = newvalue.view(-1)
         if self.config.clip_vloss:
@@ -172,3 +168,4 @@ class TransformerCritic(nn.Module):
         
         logs = {"v_loss":v_loss.item(), "pg_loss":None, "entropy_loss":None, "old_approx_kl":None, "approx_kl":None, "clipfracs":None}
         return logs
+    
