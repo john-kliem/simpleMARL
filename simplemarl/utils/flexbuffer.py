@@ -83,6 +83,9 @@ class FlexBuffer:
             gamma (float): The discount factor.
             gae_lambda (float): The lambda parameter for GAE.
         """
+        next_value = next_value.to(self.device)
+        next_done = next_done.to(self.device)
+        
         advantages = getattr(self, advantage_attr)
         rewards = getattr(self, reward_attr)
         values = getattr(self, value_attr)
