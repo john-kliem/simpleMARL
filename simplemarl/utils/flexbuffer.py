@@ -265,3 +265,44 @@ def build_vectorized_buffer(env, num_players, timesteps, num_envs, device):
     
     env.close()
     return buffer.build(device)
+
+def build_vectorized_defense_buffer(env, num_players, timesteps, num_envs, device):
+    env.reset()
+    buffer = FlexBuilder()
+
+    # Store agents as an explicit dimension [timesteps, num_envs, num_players, features]
+    # Features is the single agent observation shape.
+    # env.action_space is MultiDiscrete([num_moves, 2]) for Defense -- .n doesn't
+    # exist on MultiDiscrete, use .nvec instead. nvec[0] = move count, nvec[1] = tag count (2).
+    print("Action Space (move, tag):", env.action_space.nvec)
+
+    buffer.add("observations", shape=(timesteps, num_envs, *env.observation_space.shape), dtype=torch.float32)
+
+    # Actions now carry BOTH components per agent -- [move_idx, tag_idx] --
+    # instead of a single scalar. Trailing dim of 2 matches what
+    # DefenseVecEnv.step_async expects: actions[..., 0]=move, actions[..., 1]=tag.
+    buffer.add("actions", shape=(timesteps, num_envs, num_players, 2), dtype=torch.float32)
+
+    buffer.add("values", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("advantages", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("returns", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+    buffer.add("rewards", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+
+    # One scalar logprob per agent per step -- assumes the actor returns a
+    # SINGLE combined log-probability for the joint (move, tag) action
+    # (i.e. log p(move) + log p(tag), summed internally), not two separate
+    # per-component logprobs. If/when the actor is updated to score move and
+    # tag as genuinely separate distributions, this needs its own trailing
+    # dim of 2 to match "actions" above, and PPO's ratio computation needs
+    # to sum both components' logprob deltas, not just one.
+    buffer.add("logprobs", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+
+    buffer.add("dones", shape=(timesteps, num_envs, num_players), dtype=torch.float32)
+
+    # Joint critic state: [timesteps, num_envs, num_players, state_dim] --
+    # team-local CTDE, so num_players here is per-TEAM when called once per
+    # team, or the full roster when called once for a combined buffer.
+    buffer.add("joint_state", shape=(timesteps, num_envs, *env.state_space.shape), dtype=torch.float32)
+
+    env.close()
+    return buffer.build(device)

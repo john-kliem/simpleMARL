@@ -1,1 +1,1 @@
-from .utils.flexbuffer import build_vectorized_buffer
+from .utils.flexbuffer import build_vectorized_buffer, build_vectorized_defense_buffer
