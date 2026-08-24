@@ -7,6 +7,9 @@ from torch.distributions import Normal
 from dataclasses import dataclass
 import torch.optim as optim
 
+LOG_STD_MIN = -5.0 
+LOG_STD_MAX = 0.5
+
 @dataclass
 class PPOConfig:
     seed: int = 10
@@ -172,6 +175,8 @@ class PPO(nn.Module):
         logs = {"v_loss":v_loss.item(), "pg_loss":pg_loss.item(), "entropy_loss":entropy_loss.item(), "old_approx_kl":old_approx_kl.item(), "approx_kl":approx_kl.item(), "clipfracs":np.mean(clipfracs)}
         return logs
 
+
+
 class PPOContinuous(nn.Module):
     def __init__(self, obs_space, act_space, config=PPOConfig()):
         super().__init__()
@@ -190,20 +195,18 @@ class PPOContinuous(nn.Module):
             layer_init(nn.Linear(64,64)),
             nn.Tanh(),
         )
-        self.speed_mean = layer_init(nn.Linear(64, 1), std=0.01)
-        self.heading_mean = layer_init(nn.Linear(64, 1), std=0.01)
+        self.speed_mean = nn.Sequential(layer_init(nn.Linear(64, 1), std=0.01), nn.Tanh())
+        self.heading_mean = nn.Sequential(layer_init(nn.Linear(64, 1), std=0.01), nn.Tanh())
+        # Tag is CATEGORICAL (no-tag / tag), not a continuous Gaussian dim --
+        # the env's action Box only wraps [0,1] as a flat convenience, but
+        # the C++ side treats it as a hard 0/1 choice (tag >= 0.8 threshold),
+        # so a Normal over it wastes capacity modeling variance/mean for
+        # what is really a 2-way decision. logits head -> Categorical(2).
+        self.tag_logits = layer_init(nn.Linear(64, 2), std=0.01)
 
         self.speed_logstd = nn.Parameter(torch.zeros(1,1))
         self.heading_logstd = nn.Parameter(torch.zeros(1,1))
 
-        self.speed_low, self.heading_low = act_space.low 
-        self.speed_high, self.heading_high = act_space.high
-
-        self.speed_bias = (self.speed_high + self.speed_low) / 2.0
-        self.speed_scale = (self.speed_high - self.speed_low) / 2.0
-
-        self.heading_bias = (self.heading_high + self.heading_low) / 2.0
-        self.heading_scale = (self.heading_high - self.heading_low) / 2.0
         self.to(self.config.device)
         self.init_optimizer()
     def init_optimizer(self):
@@ -212,8 +215,8 @@ class PPOContinuous(nn.Module):
     def anneal_lr(self, iteration):
         if self.config.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / self.config.num_iterations
-            lrnow = frac * self.config.learning_rate 
-            self.optimizer.param_groups[0]["lr"] = lrnow 
+            lrnow = frac * self.config.learning_rate
+            self.optimizer.param_groups[0]["lr"] = lrnow
 
     def get_value(self, x):
         return self.critic(x)
@@ -224,35 +227,51 @@ class PPOContinuous(nn.Module):
         #Get Mean Values
         speed_mean = self.speed_mean(hidden)
         heading_mean = self.heading_mean(hidden)
+        tag_logits = self.tag_logits(hidden)
 
         #Action Distributions
-        speed_std = torch.exp(self.speed_logstd)
-        heading_std = torch.exp(self.heading_logstd)
+
+        
+        # speed_std = torch.exp(self.speed_logstd)
+        # heading_std = torch.exp(self.heading_logstd)
+        speed_logstd_clamped = torch.clamp(self.speed_logstd, LOG_STD_MIN, LOG_STD_MAX)
+        heading_logstd_clamped = torch.clamp(self.heading_logstd, LOG_STD_MIN, LOG_STD_MAX)
+
+        
+        speed_std = torch.exp(speed_logstd_clamped)
+        heading_std = torch.exp(heading_logstd_clamped)
 
         #Create Distributions
         speed_probs = Normal(speed_mean, speed_std)
         heading_probs = Normal(heading_mean, heading_std)
+        tag_probs = Categorical(logits=tag_logits)
 
         if action is None:
             speed_act = speed_probs.sample()
             heading_act = heading_probs.sample()
+            tag_act = tag_probs.sample()   # (B,) long, values in {0, 1}
 
-            speed_out = torch.clamp(speed_act * self.speed_scale + self.speed_bias, self.speed_low, self.speed_high)
-            heading_out = torch.clamp(heading_act * self.heading_scale + self.heading_bias, self.heading_low, self.heading_high)
-            action = torch.cat([speed_out, heading_out], dim=1)
+            # speed_out = torch.clamp(speed_act * self.speed_scale + self.speed_bias, self.speed_low, self.speed_high)
+            # heading_out = torch.clamp(heading_act * self.heading_scale + self.heading_bias, self.heading_low, self.heading_high)
+            tag_out = tag_act.float().unsqueeze(-1)   # already 0.0/1.0, matches the env's tag>=0.8 threshold directly
+            action = torch.cat([speed_act, heading_act, tag_out], dim=1)
         else:
-            #Normalize the passed in actions
-            speed_act = (action[:, 0].unsqueeze(-1) - self.speed_bias) / self.speed_scale
-            heading_act = (action[:, 1].unsqueeze(-1) - self.heading_bias) / self.heading_scale
-            action = torch.cat([speed_act, heading_act], dim=1)
-        #Calculate Logprobs and entropy
-        log_probs = (speed_probs.log_prob(speed_act) + heading_probs.log_prob(heading_act)).squeeze(-1)
+            #Normalize the passed in continuous actions; tag column is
+            #already the hard 0.0/1.0 choice the env received, so just
+            #recover it as a class index for the Categorical log_prob.
+            speed_act = (action[:, 0].unsqueeze(-1) )
+            heading_act = (action[:, 1].unsqueeze(-1)) 
+            tag_act = action[:, 2].round().long()   # round, not truncate -- guards against fp drift landing just under 1.0
+            action = torch.cat([speed_act, heading_act, tag_act.float().unsqueeze(-1)], dim=1)
+        #Calculate Logprobs and entropy -- Normal terms are (B,1), squeeze
+        #before adding to the Categorical terms which are already (B,).
+        log_probs = (speed_probs.log_prob(speed_act) + heading_probs.log_prob(heading_act)).squeeze(-1) + tag_probs.log_prob(tag_act)
         #Calculate Entropy
-        entropy = (speed_probs.entropy() + heading_probs.entropy()).squeeze(-1)
+        entropy = (speed_probs.entropy() + heading_probs.entropy()).squeeze(-1) + tag_probs.entropy()
 
-        #We need the logprobs and entropy of both action spaces [speed,heading]
+        #We need the logprobs and entropy of all three action dims [speed,heading,tag]
         return action, log_probs, entropy, self.critic(x)
-    
+
     #TODO: Save Load Optimizer
     def save(self, path=f"ppo_{time.time()}.pt"):
         torch.save(self.state_dict(), path)
@@ -261,7 +280,7 @@ class PPOContinuous(nn.Module):
         return self.load_state_dict(torch.load(path))
     def update(self, mini_batch):
         clipfracs = []
- 
+
         _, newlogprob, entropy, newvalue = self.get_action_and_value(mini_batch['obs'], mini_batch['actions'])
         logratio = newlogprob - mini_batch['logprobs']
         ratio = logratio.exp()
@@ -275,7 +294,7 @@ class PPOContinuous(nn.Module):
         if self.config.norm_adv:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         # Policy Loss
-        pg_loss1 = -advantages * ratio 
+        pg_loss1 = -advantages * ratio
         pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
         pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
@@ -297,9 +316,9 @@ class PPOContinuous(nn.Module):
         loss = pg_loss - self.config.ent_coef * entropy_loss + v_loss * self.config.vf_coef
 
         self.optimizer.zero_grad()
-        loss.backward() 
+        loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.config.max_grad_norm)
         self.optimizer.step()
-        
+
         logs = {"v_loss":v_loss.item(), "pg_loss":pg_loss.item(), "entropy_loss":entropy_loss.item(), "old_approx_kl":old_approx_kl.item(), "approx_kl":approx_kl.item(), "clipfracs":np.mean(clipfracs)}
         return logs
